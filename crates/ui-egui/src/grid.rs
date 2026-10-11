@@ -2059,14 +2059,16 @@ pub fn point_move(app: &mut SheetApp, ed: &mut EditState, dr: i64, dc: i64, exte
     let Some(d) = app.session.active() else { return };
     let from = ed.point_cell.unwrap_or(ed.cell);
     let to = from.offset_clamped(dr, dc);
-    let text = if extend {
-        let anchor = ed.point.and_then(|(s, e)| ed.text.get(s..e)).and_then(|t| CellRef::parse(t.split(':').next().unwrap_or(""))).unwrap_or(from);
-        RangeRef::new(anchor, to).a1()
-    } else {
-        to.a1()
-    };
+    // The range text is normalised (top-left first), so it cannot tell which end is fixed.
+    let anchor = match (ed.point_anchor, ed.point) {
+        (Some((at, cell)), Some(point)) if at == point => Some(cell),
+        _ => ed.point.and_then(|(s, e)| ed.text.get(s..e)).and_then(|t| CellRef::parse(t.split(':').next().unwrap_or(""))),
+    }
+    .unwrap_or(from);
+    let text = if extend { RangeRef::new(anchor, to).a1() } else { to.a1() };
     let _ = d;
     ed.insert_ref(&text);
+    ed.point_anchor = if extend { ed.point.map(|point| (point, anchor)) } else { None };
     ed.point_cell = Some(to);
     app.grid.ensure_visible = true;
 }

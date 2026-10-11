@@ -32,6 +32,8 @@ pub struct EditState {
     pub point: Option<(usize, usize)>,
     /// Where point mode's keyboard cursor is.
     pub point_cell: Option<CellRef>,
+    /// The fixed end of a range that Shift extends from the keyboard, with the `point` it belongs to.
+    pub point_anchor: Option<((usize, usize), CellRef)>,
     pub autocomplete: Vec<String>,
     pub ac_index: usize,
     pub request_focus: bool,
@@ -56,6 +58,7 @@ impl EditState {
             caret,
             point: None,
             point_cell: None,
+            point_anchor: None,
             autocomplete: vec![],
             ac_index: 0,
             request_focus: true,

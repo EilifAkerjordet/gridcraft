@@ -159,3 +159,26 @@ fn formula_point_drag_keeps_the_sheet_qualifier() {
     h.state_mut().session.execute("sheet.activate", json!({"sheet": "Sheet1"})).unwrap();
     assert_eq!(cells(&h), before);
 }
+
+#[test]
+fn shift_arrows_in_point_mode_keep_the_range_anchor() {
+    let mut h = harness("C5");
+    h.state_mut().begin_edit(Some("=".into()), false);
+    h.run_steps(2);
+    let key = |key, pressed, modifiers| Event::Key { key, physical_key: None, pressed, repeat: false, modifiers };
+    let arrow = |h: &mut Harness, modifiers| {
+        h.input_mut().events.extend([
+            Event::ModifiersChanged(modifiers),
+            key(egui::Key::ArrowUp, true, modifiers),
+            key(egui::Key::ArrowUp, false, modifiers),
+        ]);
+        h.run_steps(1);
+        h.input_mut().events.push(Event::ModifiersChanged(Modifiers::NONE));
+        h.run_steps(1);
+    };
+    arrow(&mut h, Modifiers::NONE);
+    assert_eq!(h.state().editor.as_ref().unwrap().text, "=C4");
+    arrow(&mut h, Modifiers::SHIFT);
+    arrow(&mut h, Modifiers::SHIFT);
+    assert_eq!(h.state().editor.as_ref().unwrap().text, "=C2:C4", "the range grows from C4, not from its top cell");
+}
