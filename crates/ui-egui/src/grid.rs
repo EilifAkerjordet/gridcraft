@@ -58,6 +58,8 @@ pub enum Drag {
 pub struct GridState {
     pub drag: Drag,
     pub ensure_visible: bool,
+    /// Scroll so the active row sits at this fraction of the view (0 top, 0.5 middle, 1 bottom).
+    pub scroll_to: Option<f32>,
     pub last_title: Option<String>,
     pub drag_select: bool,
     pub rect: Option<Rect>,
@@ -373,6 +375,15 @@ pub fn show(app: &mut SheetApp, ui: &mut egui::Ui) {
     view.scroll.y = view.scroll.y.min(max_y);
     let mut geo = Geo::new(sh, rect, view.scroll);
     // Keep the active cell visible after keyboard moves.
+    if let Some(at) = app.grid.scroll_to.take()
+        && sel.active.row >= geo.fr
+    {
+        let cr = geo.cell_rect(sh, sel.active);
+        let area = Rect::from_min_max(pos2(geo.cells.left() + geo.frozen_w, geo.cells.top() + geo.frozen_h), geo.cells.max);
+        let want = area.top() + at * (area.height() - cr.height()).max(0.0);
+        view.scroll.y = (view.scroll.y + (cr.top() - want) / geo.z).max(0.0);
+        geo = Geo::new(sh, rect, view.scroll);
+    }
     if app.grid.ensure_visible {
         app.grid.ensure_visible = false;
         let target = app.editor.as_ref().and_then(|e| e.point_cell).unwrap_or(sel.active);

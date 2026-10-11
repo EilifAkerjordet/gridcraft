@@ -147,32 +147,51 @@ Browsers or desktop environments may reserve Alt/F10 for their own menus.
 ### Vim mode
 
 Tick **View → Vim Mode** (or run `view.vimMode`) for vim-style keys in the grid. It is off by
-default and saved with your other settings. The status bar shows the mode: NORMAL, INSERT,
-VISUAL, V-ROW or V-COLUMN, followed by any count or operator typed so far.
+default and saved with your other settings. The status bar shows the mode: NORMAL, INSERT, CELL,
+VISUAL, V-ROW or V-COLUMN, followed by any count or prefix typed so far. Many keys follow
+[sc-im](https://github.com/andmarti1424/sc-im).
 
 | Keys | Action |
 |---|---|
 | `h` `j` `k` `l` (with a count: `5j`) | Move |
-| `w` `b` / `}` `{` | Next / previous filled cell along the row / column (like Ctrl+arrow) |
+| `w` `b` / `]` `[` | Next / previous filled cell along the row / column (like Ctrl+arrow) |
 | `0` `^` `$` | First column / last filled cell in the row |
 | `gg` `G` (`12G` goes to row 12) | First / last used row |
 | `Ctrl-d` `Ctrl-u` / `H` `M` `L` | Half a screen down / up; top, middle, bottom row on screen |
+| `go` + address (`goab24`) | Go to a cell; the cursor jumps as you type, any other key ends it |
+| `m` `a`–`z` / `'` or `` ` `` + letter | Mark the cell (or the visual selection) / go back to the mark |
+| `gl` | Back to where the last jump (`gg` `G` `go` marks `/` `n`) started |
+| `zt` `zz` `zb` | Scroll the cursor's row to the top / middle / bottom |
 | `i` `a` `Enter` | Edit the cell, caret at the start / end |
 | `s` `cc` / `o` `O` | Replace the cell's content / insert a row below / above and type in it |
-| `Esc` while editing | Keep the edit and return to NORMAL (`u` undoes it) |
-| `x` / `dd` / `yy` | Cut the cell / delete rows / copy rows |
+| `x` / `dd` `dr` / `dc` | Cut the cell / delete rows / delete columns |
+| `yy` `yr` / `yc` | Copy rows / columns |
+| `+r` `+c` | Insert rows / columns at the cursor |
 | `p` `P` | Paste cells at the cursor; rows go below / above (columns right / left) |
+| `Pv` `Pf` `Pc` `Pt` | Paste values / formats / formulas / transposed at the cursor |
+| `{` `\|` `}` | Align left / centre / right |
+| `fh` `fl` / `fk` `fj` | Narrower / wider column; shorter / taller row (with a count: `3fl`) |
+| `Zr` `Zc` | Hide the row / column |
 | `>>` `<<` | Indent / outdent |
 | `u` `Ctrl-r` / `.` | Undo / redo / repeat the last change |
-| `v` `V` `Ctrl-v` | Select cells / whole rows / whole columns, then `y` `d` `c` `>` `<`, `o` swaps ends |
+| `v` `V` `Ctrl-v` | Select cells / whole rows / whole columns, then `y` `d` `c` `>` `<`, `{` `\|` `}`, `f`… or `Z`…; `o` swaps ends |
 | `gt` `gT` | Next / previous sheet |
 | `/` `n` `N` | Find, next match, previous match |
+
+`P` followed by any key other than `v` `f` `c` `t` is a plain `P`, then that key does its own job.
+
+While typing in a cell, Escape switches to CELL mode, vim's normal mode on the cell's text:
+`h` `l` `0` `^` `$` `w` `b` `e` `W` `B` `E`, `f` `t` `F` `T` + character with `;` `,`, `x` `X`
+`r` `~` `s` `S` `C` `D`, `d` `c` `y` with a motion or `iw` `aw` (`dw`, `ciw`, `d2e`, `dt,`), `dd`
+`cc` `yy` `p` `P` `u`, and `i` `a` `I` `A` to type again. A second Escape keeps the edit; Enter
+keeps it from either mode. In a formula, `Ctrl-h` `Ctrl-j` `Ctrl-k` `Ctrl-l` point at the cell
+left, down, up or right, like the arrow keys after `=` or `(`, and with Shift they stretch the
+reference into a range.
 
 Arrows, Tab, Delete, F-keys and Cmd shortcuts keep their Excel behaviour. Yanked cells also go to
 the system clipboard. On Windows and Linux Ctrl+V stays Paste: use `Ctrl-q` for column selection.
 Vim takes the Ctrl key there, so Ctrl+D, Ctrl+U and Ctrl+R mean half-page and redo instead of
-Fill Down, Underline and Fill Right while vim mode is on. Motions inside the cell editor are not
-supported yet.
+Fill Down, Underline and Fill Right while vim mode is on.
 
 ### Logs
 

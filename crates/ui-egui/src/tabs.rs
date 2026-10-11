@@ -195,10 +195,7 @@ pub fn status_bar(app: &mut SheetApp, ui: &mut Ui) {
                 if app.ui.vim_mode {
                     let label = crate::vim::mode_label(app);
                     ui.label(egui::RichText::new(format!("-- {label} --")).font(theme::ui_bold(12.5)).color(t.text));
-                    let pending = match app.vim.search() {
-                        Some(query) => format!("/{query}"),
-                        None => app.vim.pending_keys(),
-                    };
+                    let pending = crate::vim::status_keys(app);
                     if !pending.is_empty() {
                         ui.label(egui::RichText::new(pending).font(egui::FontId::monospace(12.5)).color(t.text));
                     }

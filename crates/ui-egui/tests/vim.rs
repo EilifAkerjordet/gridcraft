@@ -66,6 +66,12 @@ fn esc(h: &mut Harness) {
     press(h, Key::Escape, Modifiers::NONE);
 }
 
+/// Escape to cell normal mode, then Escape again to save.
+fn save(h: &mut Harness) {
+    esc(h);
+    esc(h);
+}
+
 fn text(h: &Harness, cell: &str) -> String {
     h.state().session.active().unwrap().wb.active().unwrap().cell(CellRef::parse(cell).unwrap()).map(|c| c.input_text()).unwrap_or_default()
 }
@@ -116,7 +122,7 @@ fn motions_move_the_cursor_without_editing() {
     assert_eq!(active(&h), "B1");
     typed(&mut h, "4G");
     assert_eq!(active(&h), "B4");
-    typed(&mut h, "}");
+    typed(&mut h, "]");
     assert_eq!(active(&h), "B5");
     typed(&mut h, "h");
     assert_eq!(active(&h), "A5");
@@ -141,23 +147,26 @@ fn half_page_and_screen_motions_use_the_visible_rows() {
 }
 
 #[test]
-fn insert_edits_and_escape_commits() {
+fn insert_edits_and_escape_twice_commits() {
     let mut h = harness(rows(), true);
     typed(&mut h, "a");
     assert!(h.state().editor.is_some());
     assert_eq!(gridcraft_ui_egui::vim::mode_label(h.state()), "INSERT");
     typed(&mut h, "x");
     esc(&mut h);
+    assert!(h.state().editor.is_some(), "the first Escape stays in the cell");
+    assert_eq!(gridcraft_ui_egui::vim::mode_label(h.state()), "CELL");
+    esc(&mut h);
     assert!(h.state().editor.is_none());
     assert_eq!(text(&h, "A1"), "r1x", "a appends and Escape keeps the edit");
     assert_eq!(gridcraft_ui_egui::vim::mode_label(h.state()), "NORMAL");
     typed(&mut h, "i");
     typed(&mut h, "y");
-    esc(&mut h);
+    save(&mut h);
     assert_eq!(text(&h, "A1"), "yr1x", "i puts the caret at the start");
     typed(&mut h, "s");
     typed(&mut h, "new");
-    esc(&mut h);
+    save(&mut h);
     assert_eq!(text(&h, "A1"), "new", "s replaces the content");
     typed(&mut h, "u");
     assert_eq!(text(&h, "A1"), "yr1x", "u undoes the committed edit");
@@ -196,6 +205,8 @@ fn yy_and_capital_p_put_above() {
     typed(&mut h, "4Gyy");
     assert_eq!(text(&h, "A4"), "r4", "yy does not change the sheet");
     typed(&mut h, "ggP");
+    assert_eq!(text(&h, "A1"), "r1", "P waits for a typed paste key");
+    esc(&mut h);
     assert_eq!(text(&h, "A1"), "r4");
     assert_eq!(text(&h, "B1"), "40");
     assert_eq!(text(&h, "A2"), "r1");
@@ -208,7 +219,7 @@ fn o_opens_a_row_below_and_dot_repeats_it() {
     assert!(h.state().editor.is_some());
     assert_eq!(active(&h), "A2");
     typed(&mut h, "hey");
-    esc(&mut h);
+    save(&mut h);
     assert_eq!(text(&h, "A2"), "hey");
     assert_eq!(text(&h, "A3"), "r2");
     typed(&mut h, ".");
@@ -356,4 +367,193 @@ fn turning_vim_off_restores_excel_typing() {
     assert_eq!(h.state().vim.mode(), Mode::Normal);
     typed(&mut h, "z");
     assert!(h.state().editor.is_some());
+}
+
+fn editor_text(h: &Harness) -> String {
+    h.state().editor.as_ref().map(|e| e.text.clone()).unwrap_or_default()
+}
+
+fn halign(h: &Harness, cell: &str) -> gridcraft_engine::model::HAlign {
+    let d = h.state().session.active().unwrap();
+    let sh = d.wb.active().unwrap();
+    d.wb.styles.get(sh.style_id(CellRef::parse(cell).unwrap())).align.h
+}
+
+#[test]
+fn cell_normal_mode_edits_the_text() {
+    let mut s = rows();
+    s.execute("cell.set", json!({"cell": "A1", "input": "one two three"})).unwrap();
+    let mut h = harness(s, true);
+    typed(&mut h, "A");
+    esc(&mut h);
+    assert_eq!(gridcraft_ui_egui::vim::mode_label(h.state()), "CELL");
+    typed(&mut h, "0w");
+    typed(&mut h, "cw");
+    assert_eq!(gridcraft_ui_egui::vim::mode_label(h.state()), "INSERT", "cw goes back to typing");
+    typed(&mut h, "2");
+    assert_eq!(editor_text(&h), "one 2 three");
+    esc(&mut h);
+    typed(&mut h, "$x");
+    assert_eq!(editor_text(&h), "one 2 thre", "motion and edit letters are not typed");
+    typed(&mut h, "d");
+    assert_eq!(gridcraft_ui_egui::vim::status_keys(h.state()), "d");
+    typed(&mut h, "0");
+    assert_eq!(editor_text(&h), "e");
+    typed(&mut h, "u");
+    assert_eq!(editor_text(&h), "one 2 thre");
+    press(&mut h, Key::Enter, Modifiers::NONE);
+    assert!(h.state().editor.is_none(), "Enter saves from cell normal mode");
+    assert_eq!(text(&h, "A1"), "one 2 thre");
+    assert_eq!(active(&h), "A2");
+}
+
+#[test]
+fn enter_saves_while_typing_and_off_mode_escape_still_cancels() {
+    let mut h = harness(rows(), true);
+    typed(&mut h, "s");
+    typed(&mut h, "fresh");
+    press(&mut h, Key::Enter, Modifiers::NONE);
+    assert_eq!(text(&h, "A1"), "fresh");
+    let mut h = harness(rows(), false);
+    typed(&mut h, "x");
+    esc(&mut h);
+    assert!(h.state().editor.is_none());
+    assert_eq!(text(&h, "A1"), "r1", "without vim mode Escape still cancels");
+}
+
+#[test]
+fn ctrl_hjkl_point_at_cells_in_a_formula() {
+    let mut h = harness(rows(), true);
+    typed(&mut h, "jjjs");
+    typed(&mut h, "=SUM(");
+    press(&mut h, Key::K, Modifiers::CTRL);
+    assert_eq!(editor_text(&h), "=SUM(A3");
+    press(&mut h, Key::K, Modifiers::CTRL | Modifiers::SHIFT);
+    press(&mut h, Key::K, Modifiers::CTRL | Modifiers::SHIFT);
+    assert_eq!(editor_text(&h), "=SUM(A1:A3", "the range keeps its first cell as the anchor");
+    press(&mut h, Key::L, Modifiers::CTRL | Modifiers::SHIFT);
+    assert_eq!(editor_text(&h), "=SUM(A1:B3");
+    typed(&mut h, ")");
+    press(&mut h, Key::Enter, Modifiers::NONE);
+    assert_eq!(text(&h, "A4"), "=SUM(A1:B3)");
+    // Outside a place that takes a reference, Ctrl+L does not insert one.
+    typed(&mut h, "kA");
+    press(&mut h, Key::L, Modifiers::CTRL);
+    assert_eq!(editor_text(&h), "=SUM(A1:B3)");
+}
+
+#[test]
+fn insert_delete_and_yank_rows_and_columns() {
+    let mut h = harness(rows(), true);
+    typed(&mut h, "j+r");
+    assert_eq!(text(&h, "A2"), "");
+    assert_eq!(text(&h, "A3"), "r2", "+r inserts a row at the cursor");
+    typed(&mut h, "dr");
+    assert_eq!(text(&h, "A2"), "r2");
+    typed(&mut h, "l2+c");
+    assert_eq!(text(&h, "D1"), "10", "2+c inserts two columns");
+    typed(&mut h, "2dc");
+    assert_eq!(text(&h, "B1"), "10");
+    typed(&mut h, "ycP");
+    esc(&mut h);
+    assert_eq!(text(&h, "B1"), "10");
+    assert_eq!(text(&h, "C1"), "10", "yc then P puts the column back before the cursor");
+    typed(&mut h, "dc");
+    assert_eq!(text(&h, "C1"), "");
+    typed(&mut h, "hdcp");
+    assert_eq!(text(&h, "A1"), "10", "dc then p moves a column");
+    assert_eq!(text(&h, "B1"), "r1");
+    typed(&mut h, "yr4Gp");
+    assert_eq!(text(&h, "A5"), "20", "yr then p puts the row below");
+    assert_eq!(text(&h, "B5"), "r2");
+}
+
+#[test]
+fn typed_paste_keys() {
+    let mut s = rows();
+    s.execute("cell.set", json!({"cell": "C1", "input": "=B1*2"})).unwrap();
+    s.execute("selection.set", json!({"cell": "C1"})).unwrap();
+    let mut h = harness(s, true);
+    typed(&mut h, "vyjPv");
+    assert_eq!(text(&h, "C2"), "20", "Pv pastes the value");
+    typed(&mut h, "jPc");
+    assert_eq!(text(&h, "C3"), "=B3*2", "Pc pastes the formula, references adjusted");
+    typed(&mut h, "ggvjyllPt");
+    assert_eq!([text(&h, "E1"), text(&h, "F1"), text(&h, "E2")], ["=D1*2".to_string(), "20".to_string(), String::new()], "Pt pastes transposed");
+    typed(&mut h, "Pj");
+    assert_eq!(text(&h, "E2"), "20");
+    assert_eq!(active(&h), "E2", "P then another key is a plain P, then the key");
+}
+
+#[test]
+fn go_marks_and_jump_back() {
+    let mut h = harness(rows(), true);
+    typed(&mut h, "goab24");
+    assert_eq!(active(&h), "AB24", "go jumps as the address is typed");
+    typed(&mut h, "j");
+    assert_eq!(active(&h), "AB25", "another key ends the address and runs");
+    typed(&mut h, "ma");
+    typed(&mut h, "gg0");
+    typed(&mut h, "'a");
+    assert_eq!(active(&h), "AB25");
+    typed(&mut h, "gl");
+    assert_eq!(active(&h), "A1", "gl goes back to where the jump started");
+    typed(&mut h, "gl");
+    assert_eq!(active(&h), "AB25");
+    typed(&mut h, "gg0vjlmb");
+    esc(&mut h);
+    typed(&mut h, "G`b");
+    assert_eq!(selected(&h), "A1:B2", "a mark set in visual mode reselects the range");
+    typed(&mut h, "'q");
+    assert_eq!(selected(&h), "A1:B2", "an unset mark does nothing");
+}
+
+#[test]
+fn z_scrolls_the_cursor_row() {
+    let mut h = harness(rows(), true);
+    typed(&mut h, "200G");
+    let (top, bottom) = h.state().grid.visible_rows.unwrap();
+    assert!(top <= 199 && 199 <= bottom);
+    typed(&mut h, "zt");
+    assert_eq!(h.state().grid.visible_rows.unwrap().0, 199, "zt puts the row at the top");
+    typed(&mut h, "zb");
+    assert_eq!(h.state().grid.visible_rows.unwrap().1, 199, "zb puts the row at the bottom");
+    typed(&mut h, "zz");
+    let (top, bottom) = h.state().grid.visible_rows.unwrap();
+    assert!((199 - top).abs_diff(bottom - 199) <= 1, "zz centres the row: {top}..{bottom}");
+    assert_eq!(active(&h), "A200");
+}
+
+#[test]
+fn align_resize_and_hide() {
+    use gridcraft_engine::model::HAlign;
+    let mut h = harness(rows(), true);
+    typed(&mut h, "}");
+    assert_eq!(halign(&h, "A1"), HAlign::Right);
+    typed(&mut h, "}");
+    assert_eq!(halign(&h, "A1"), HAlign::Right, "a second press keeps the alignment");
+    typed(&mut h, "vj|");
+    assert_eq!([halign(&h, "A1"), halign(&h, "A2")], [HAlign::Center, HAlign::Center]);
+    typed(&mut h, "{");
+    assert_eq!(halign(&h, "A2"), HAlign::Left, "the cursor stays where the selection ended");
+    let width = |h: &Harness, c| h.state().session.active().unwrap().wb.active().unwrap().col_width(c);
+    let height = |h: &Harness, r| h.state().session.active().unwrap().wb.active().unwrap().row_height(r);
+    // The cursor is on A2.
+    let (w, rh) = (width(&h, 0), height(&h, 1));
+    typed(&mut h, "2fl");
+    assert_eq!(width(&h, 0), w + 16.0);
+    typed(&mut h, "fh");
+    assert_eq!(width(&h, 0), w + 8.0);
+    typed(&mut h, "fj");
+    assert_eq!(height(&h, 1), rh + 4.0);
+    assert_eq!(height(&h, 0), rh, "only the cursor's row");
+    typed(&mut h, "u");
+    assert_eq!(height(&h, 1), rh, "a resize is one undo step");
+    typed(&mut h, "jZr");
+    let sh = |h: &Harness| h.state().session.active().unwrap().wb.active().unwrap().clone();
+    assert!(sh(&h).is_row_hidden(2));
+    assert!(!sh(&h).is_row_hidden(1));
+    typed(&mut h, "klZc");
+    assert!(sh(&h).is_col_hidden(1));
+    assert!(!sh(&h).is_col_hidden(0));
 }

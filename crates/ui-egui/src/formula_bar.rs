@@ -163,6 +163,9 @@ pub fn editor_widget(app: &mut SheetApp, ui: &mut egui::Ui, id: egui::Id, font: 
     let has_focus = focused == Some(id) || (mine && (ed.request_focus || focused.is_none()));
     let mut action: Option<(i64, i64, bool, bool)> = None;
     let mut cancel = false;
+    if has_focus && mine && app.ui.vim_mode {
+        action = vim_keys(app, ui, &mut ed);
+    }
     if has_focus && mine {
         let (enter, tab, esc, alt_enter, cmd_enter, ctrl_shift_enter, shift) = ui.input_mut(|i| {
             let m = i.modifiers;
@@ -199,8 +202,10 @@ pub fn editor_widget(app: &mut SheetApp, ui: &mut egui::Ui, id: egui::Id, font: 
             if !ed.autocomplete.is_empty() {
                 ed.autocomplete.clear();
             } else if app.ui.vim_mode {
-                // Vim: Escape leaves insert mode keeping the text (undo with `u`).
-                action = Some((0, 0, false, false));
+                ed.vim.enter_normal(&ed.text, &mut ed.caret);
+                ed.caret_to_end = false;
+                ed.sync_caret = true;
+                ed.completion = None;
             } else {
                 cancel = true;
             }
@@ -303,6 +308,18 @@ pub fn editor_widget(app: &mut SheetApp, ui: &mut egui::Ui, id: egui::Id, font: 
     if !synced && let Some(r) = output.cursor_range {
         ed.caret = r.primary.index.into();
     }
+    // Cell normal mode: a block over the character under the caret.
+    if mine && ed.vim.is_normal() {
+        let at = output.galley.pos_from_cursor(egui::text::CCursor::new(ed.caret));
+        let next = output.galley.pos_from_cursor(egui::text::CCursor::new(ed.caret + 1));
+        let width = if ed.caret < ed.text.chars().count() && next.min.y == at.min.y && next.min.x > at.min.x {
+            next.min.x - at.min.x
+        } else {
+            at.height() * 0.5
+        };
+        let block = Rect::from_min_size(output.galley_pos + at.min.to_vec2(), vec2(width, at.height()));
+        ui.painter().rect_filled(block, 0.0, cell_text_color.gamma_multiply(0.3));
+    }
     if resp.changed() {
         ed.completion = None;
         if !ed.is_formula()
@@ -402,6 +419,71 @@ pub fn editor_widget(app: &mut SheetApp, ui: &mut egui::Ui, id: egui::Id, font: 
     } else if let Some((dr, dc, array, fill)) = action {
         app.commit_edit(dr, dc, array, fill);
     }
+}
+
+/// Vim mode keys in the editor: Ctrl+H/J/K/L point at cells while a formula can take a
+/// reference (Ctrl+Shift extends it to a range), and normal mode inside the cell takes every
+/// typing key. Returns the commit that normal mode asks for.
+fn vim_keys(app: &mut SheetApp, ui: &egui::Ui, ed: &mut crate::editor::EditState) -> Option<(i64, i64, bool, bool)> {
+    if !ed.from_formula_bar && ed.can_point() {
+        let pointed = ui.input_mut(|i| {
+            for (key, dr, dc) in [(Key::H, 0, -1), (Key::J, 1, 0), (Key::K, -1, 0), (Key::L, 0, 1)] {
+                // Ctrl also matches Ctrl+Shift, so look for the range form first.
+                if i.consume_key(egui::Modifiers::CTRL | egui::Modifiers::SHIFT, key) {
+                    return Some((dr, dc, true));
+                }
+                if i.consume_key(egui::Modifiers::CTRL, key) {
+                    return Some((dr, dc, false));
+                }
+            }
+            None
+        });
+        if let Some((dr, dc, extend)) = pointed {
+            crate::grid::point_move(app, ed, dr, dc, extend);
+            ed.caret_to_end = false;
+            ed.sync_caret = true;
+            ed.autocomplete.clear();
+            app.session.mode = gridcraft_engine::Mode::Point;
+        }
+    }
+    if !ed.vim.is_normal() {
+        return None;
+    }
+    let inputs = crate::vim::take_inputs(ui.ctx());
+    if inputs.is_empty() {
+        return None;
+    }
+    let before = ed.text.clone();
+    let mut action = None;
+    let mut inputs = inputs.into_iter();
+    while let Some(input) = inputs.next() {
+        match ed.vim.feed(&mut ed.text, &mut ed.caret, &input) {
+            crate::vim_text::Outcome::Continue => {}
+            crate::vim_text::Outcome::Insert => {
+                // Keys typed after `i`, `cw` and so on in the same frame are text.
+                for rest in inputs.by_ref() {
+                    if let crate::vim::Input::Char(c) = rest {
+                        let b = ed.text.char_indices().nth(ed.caret).map(|(i, _)| i).unwrap_or(ed.text.len());
+                        ed.text.insert(b, c);
+                        ed.caret += 1;
+                    }
+                }
+            }
+            crate::vim_text::Outcome::Commit { down } => {
+                action = Some((i64::from(down), 0, false, false));
+                break;
+            }
+        }
+    }
+    ed.caret_to_end = false;
+    ed.sync_caret = true;
+    if ed.text != before {
+        ed.point = None;
+        ed.completion = None;
+        ed.autocomplete.clear();
+        app.session.mode = if ed.can_point() { gridcraft_engine::Mode::Point } else { gridcraft_engine::Mode::Edit };
+    }
+    action
 }
 
 fn cycle_anchor(ed: &mut crate::editor::EditState) {

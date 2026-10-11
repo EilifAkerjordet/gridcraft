@@ -43,6 +43,8 @@ pub struct EditState {
     pub completion: Option<String>,
     /// Move the caret to the end on the next frame.
     pub caret_to_end: bool,
+    /// Vim mode: normal mode inside the cell (Escape while typing).
+    pub vim: crate::vim_text::TextVim,
 }
 
 impl EditState {
@@ -65,6 +67,7 @@ impl EditState {
             sync_caret: true,
             caret_to_end: true,
             completion: None,
+            vim: Default::default(),
         }
     }
 

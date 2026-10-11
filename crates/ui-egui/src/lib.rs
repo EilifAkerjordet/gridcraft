@@ -26,6 +26,7 @@ pub mod tabs;
 pub mod text_box;
 pub mod theme;
 pub mod vim;
+pub mod vim_text;
 pub mod widgets;
 
 use std::collections::HashMap;
