@@ -394,6 +394,8 @@ pub fn run_command(app: &mut SheetApp, id: &str) {
     app.grid.ensure_visible = true;
 }
 
+const ROW_H: f32 = 28.0;
+
 pub fn show(app: &mut SheetApp, ctx: &Context) {
     let Some(mut p) = app.palette.take() else { return };
     let mac = ctx.os() == egui::os::OperatingSystem::Mac;
@@ -453,9 +455,10 @@ pub fn show(app: &mut SheetApp, ctx: &Context) {
             if rows.is_empty() {
                 ui.label(egui::RichText::new("No matching actions").color(t.text_dim));
             }
-            egui::ScrollArea::vertical().max_height(400.0).auto_shrink([false, true]).show(ui, |ui| {
+            let list = (screen.height() * 0.6 - 60.0).clamp(140.0, 640.0).min(rows.len() as f32 * ROW_H);
+            egui::ScrollArea::vertical().max_height(list).min_scrolled_height(list).auto_shrink([false, true]).show(ui, |ui| {
                 for (i, row) in rows.iter().enumerate() {
-                    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 28.0), Sense::click());
+                    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), ROW_H), Sense::click());
                     if resp.clicked() {
                         pick = Some(i);
                     }
