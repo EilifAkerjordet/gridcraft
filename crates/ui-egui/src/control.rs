@@ -169,6 +169,7 @@ pub fn handle(app: &mut SheetApp, ctx: &egui::Context, method: &str, p: &Json) -
             for (id, label, params) in [
                 ("ui.ribbonTab", "Ribbon Tab", ""),
                 ("view.collapseRibbon", "Collapse Ribbon", ""),
+                ("view.vimMode", "Vim Mode", "{on?: bool} (toggles without `on`)"),
                 ("view.darkMode", "Dark Mode", ""),
                 ("view.theme", "Display Theme", ""),
                 ("view.interfaceScale", "Interface Size", "{percent: 75–200 | \"auto\"} (100 = auto; clamped)"),

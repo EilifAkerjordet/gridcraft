@@ -25,6 +25,7 @@ pub mod ribbon;
 pub mod tabs;
 pub mod text_box;
 pub mod theme;
+pub mod vim;
 pub mod widgets;
 
 use std::collections::HashMap;
@@ -59,6 +60,8 @@ pub struct UiState {
     /// [`INTERFACE_SCALE_MIN`]..=[`INTERFACE_SCALE_MAX`]; a malformed saved value reads as 100.
     #[serde(deserialize_with = "lenient_interface_scale")]
     pub interface_scale: u16,
+    /// Vim-style modal keys in the grid (`view.vimMode`); see [`vim`].
+    pub vim_mode: bool,
 }
 
 pub const INTERFACE_SCALE_MIN: u16 = 75;
@@ -87,6 +90,7 @@ impl Default for UiState {
             recent: vec![],
             language: i18n::Language::En,
             interface_scale: 100,
+            vim_mode: false,
         }
     }
 }
@@ -185,6 +189,8 @@ pub struct SheetApp {
     pub name_box: Option<String>,
     /// Transient ribbon keyboard navigation; never saved with UI preferences.
     pub keytips: keytips::KeyTips,
+    /// Vim mode state (mode, pending keys, register); never saved.
+    pub vim: vim::Vim,
     pub(crate) shots: control::Shots,
     /// Chart selected on the sheet (id).
     pub selected_chart: Option<u32>,
@@ -218,6 +224,7 @@ impl SheetApp {
             effective_dark: false,
             name_box: None,
             keytips: keytips::KeyTips::default(),
+            vim: vim::Vim::default(),
             shots: control::Shots::default(),
             selected_chart: None,
             started: now_ms(),
@@ -335,6 +342,11 @@ impl SheetApp {
             "view.collapseRibbon" => {
                 self.ui.ribbon_collapsed = !self.ui.ribbon_collapsed;
                 Ok(Json::Null)
+            }
+            "view.vimMode" => {
+                self.ui.vim_mode = p.get("on").and_then(Json::as_bool).unwrap_or(!self.ui.vim_mode);
+                self.vim.reset();
+                Ok(json!({"on": self.ui.vim_mode}))
             }
             "view.darkMode" => {
                 let current = if self.ui.system_theme { self.effective_dark } else { self.ui.dark };
@@ -664,6 +676,9 @@ impl SheetApp {
         i18n::set_current(&ctx, self.ui.language);
         let t = theme::Tokens::get(&ctx);
         self.ribbon_keys(&ctx);
+        let vim_enabled =
+            self.keytips.prefix().is_none() && self.text_box_editor.is_none() && self.grid_owns_keys(&ctx) && !egui::Popup::is_any_open(&ctx);
+        vim::process(self, &ctx, vim_enabled);
         ribbon::title_bar(self, ui);
         ribbon::show(self, ui);
         if self.session.prefs.formula_bar {
@@ -717,9 +732,9 @@ impl SheetApp {
         }
     }
 
-    fn ribbon_keys(&mut self, ctx: &egui::Context) {
-        let before = self.keytips.prefix().map(str::to_string);
-        let enabled = self.editor.is_none()
+    /// No editor, dialog, text field or grid menu has the keyboard.
+    fn grid_owns_keys(&self, ctx: &egui::Context) -> bool {
+        self.editor.is_none()
             && self.dialog.is_none()
             && self.message.is_none()
             && self.name_box.is_none()
@@ -729,7 +744,11 @@ impl SheetApp {
             && self.grid.filter_menu.is_none()
             && self.grid.list_picker.is_none()
             && self.grid.renaming_tab.is_none()
-            && (before.is_some() || !egui::Popup::is_any_open(ctx));
+    }
+
+    fn ribbon_keys(&mut self, ctx: &egui::Context) {
+        let before = self.keytips.prefix().map(str::to_string);
+        let enabled = self.grid_owns_keys(ctx) && (before.is_some() || !egui::Popup::is_any_open(ctx));
         let actions = self.keytips.process(ctx, enabled);
         if before.is_some() && before.as_deref() != self.keytips.prefix() && !ctx.input(|i| i.pointer.any_pressed()) {
             // Leave pointer cancellation to the popup so clicking a menu item still works.

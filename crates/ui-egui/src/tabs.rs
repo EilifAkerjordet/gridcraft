@@ -192,6 +192,18 @@ pub fn status_bar(app: &mut SheetApp, ui: &mut Ui) {
         ui,
         |ui| {
             ui.horizontal_centered(|ui| {
+                if app.ui.vim_mode {
+                    let label = crate::vim::mode_label(app);
+                    ui.label(egui::RichText::new(format!("-- {label} --")).font(theme::ui_bold(12.5)).color(t.text));
+                    let pending = match app.vim.search() {
+                        Some(query) => format!("/{query}"),
+                        None => app.vim.pending_keys(),
+                    };
+                    if !pending.is_empty() {
+                        ui.label(egui::RichText::new(pending).font(egui::FontId::monospace(12.5)).color(t.text));
+                    }
+                    ui.add_space(12.0);
+                }
                 let mode = match app.session.mode {
                     gridcraft_engine::Mode::Ready => "Ready",
                     gridcraft_engine::Mode::Enter => "Enter",

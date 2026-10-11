@@ -198,6 +198,9 @@ pub fn editor_widget(app: &mut SheetApp, ui: &mut egui::Ui, id: egui::Id, font: 
         if esc {
             if !ed.autocomplete.is_empty() {
                 ed.autocomplete.clear();
+            } else if app.ui.vim_mode {
+                // Vim: Escape leaves insert mode keeping the text (undo with `u`).
+                action = Some((0, 0, false, false));
             } else {
                 cancel = true;
             }

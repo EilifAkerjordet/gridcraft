@@ -84,6 +84,8 @@ pub struct GridState {
     /// Page ranges for Page Break Preview, cached per (doc uid, revision, sheet).
     pub pages: Option<((u64, u64, usize), Vec<(RangeRef, u32)>)>,
     pub header_menu: Option<(Pos2, bool)>,
+    /// First and last row on screen last frame (vim's H, M, L and half-page moves).
+    pub visible_rows: Option<(u32, u32)>,
 }
 
 impl GridState {
@@ -404,6 +406,7 @@ pub fn show(app: &mut SheetApp, ui: &mut egui::Ui) {
     // Quadrants: (rows, cols, clip).
     let (sr0, sr1) = geo.scroll_rows(sh);
     let (sc0, sc1) = geo.scroll_cols(sh);
+    app.grid.visible_rows = Some((if geo.fr > 0 { 0 } else { sr0 }, sr1.saturating_sub(1).max(sr0)));
     let fr_rows = (0, geo.fr.saturating_sub(1));
     let fr_cols = (0, geo.fc.saturating_sub(1));
     let split = pos2(geo.cells.left() + geo.frozen_w, geo.cells.top() + geo.frozen_h);

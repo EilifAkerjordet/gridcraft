@@ -1655,6 +1655,12 @@ fn view(app: &mut SheetApp, ui: &mut Ui) {
             act(app, "view.headings", json!({"on": h}));
         }
     });
+    ui.vertical(|ui| {
+        let mut vim = app.ui.vim_mode;
+        if ui.checkbox(&mut vim, lang.tr("Vim Mode")).on_hover_text(lang.tr("Vim-style keys in the grid: hjkl, v, dd, yy, p, /")).changed() {
+            act(app, "view.vimMode", json!({"on": vim}));
+        }
+    });
     sep(ui);
     if big_button(ui, Icon::Zoom, "Zoom", "Zoom…", false).clicked() {
         app.open_dialog("zoom", json!({}));

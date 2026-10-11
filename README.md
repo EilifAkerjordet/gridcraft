@@ -144,6 +144,36 @@ or using another dialog. This is initial support for these Home and legacy paths
 other ribbon commands and full mouse-free navigation remain to be implemented.
 Browsers or desktop environments may reserve Alt/F10 for their own menus.
 
+### Vim mode
+
+Tick **View → Vim Mode** (or run `view.vimMode`) for vim-style keys in the grid. It is off by
+default and saved with your other settings. The status bar shows the mode: NORMAL, INSERT,
+VISUAL, V-ROW or V-COLUMN, followed by any count or operator typed so far.
+
+| Keys | Action |
+|---|---|
+| `h` `j` `k` `l` (with a count: `5j`) | Move |
+| `w` `b` / `}` `{` | Next / previous filled cell along the row / column (like Ctrl+arrow) |
+| `0` `^` `$` | First column / last filled cell in the row |
+| `gg` `G` (`12G` goes to row 12) | First / last used row |
+| `Ctrl-d` `Ctrl-u` / `H` `M` `L` | Half a screen down / up; top, middle, bottom row on screen |
+| `i` `a` `Enter` | Edit the cell, caret at the start / end |
+| `s` `cc` / `o` `O` | Replace the cell's content / insert a row below / above and type in it |
+| `Esc` while editing | Keep the edit and return to NORMAL (`u` undoes it) |
+| `x` / `dd` / `yy` | Cut the cell / delete rows / copy rows |
+| `p` `P` | Paste cells at the cursor; rows go below / above (columns right / left) |
+| `>>` `<<` | Indent / outdent |
+| `u` `Ctrl-r` / `.` | Undo / redo / repeat the last change |
+| `v` `V` `Ctrl-v` | Select cells / whole rows / whole columns, then `y` `d` `c` `>` `<`, `o` swaps ends |
+| `gt` `gT` | Next / previous sheet |
+| `/` `n` `N` | Find, next match, previous match |
+
+Arrows, Tab, Delete, F-keys and Cmd shortcuts keep their Excel behaviour. Yanked cells also go to
+the system clipboard. On Windows and Linux Ctrl+V stays Paste: use `Ctrl-q` for column selection.
+Vim takes the Ctrl key there, so Ctrl+D, Ctrl+U and Ctrl+R mean half-page and redo instead of
+Fill Down, Underline and Fill Right while vim mode is on. Motions inside the cell editor are not
+supported yet.
+
 ### Logs
 
 The desktop app writes its log to standard error and to `gridcraft.log` in the `logs` folder
