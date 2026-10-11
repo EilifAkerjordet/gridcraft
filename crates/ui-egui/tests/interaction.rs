@@ -311,19 +311,7 @@ fn name_manager_new_and_edit_open_the_name_dialog_and_come_back() {
 #[test]
 fn dialogs_open_and_close() {
     let mut h = harness(blank());
-    for name in [
-        "formatCells",
-        "insertFunction",
-        "find",
-        "sort",
-        "nameManager",
-        "dataValidation",
-        "pasteSpecial",
-        "commandSearch",
-        "spelling",
-        "goTo",
-        "about",
-    ] {
+    for name in ["formatCells", "insertFunction", "find", "sort", "nameManager", "dataValidation", "pasteSpecial", "spelling", "goTo", "about"] {
         h.state_mut().open_dialog(name, json!({}));
         h.run_steps(2);
         key(&mut h, Key::Escape, Modifiers::NONE);

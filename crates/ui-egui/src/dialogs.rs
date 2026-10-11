@@ -1,5 +1,5 @@
 //! Dialogs. Simple dialogs are forms (fields → a command with params); Format Cells, Insert
-//! Function, Find & Replace, Sort, Name Manager and the command palette are custom.
+//! Function, Find & Replace, Sort and Name Manager are custom.
 //!
 //! Every dialog is also reachable programmatically: `ui.dialog {name}` opens one,
 //! `ui.dialog.set {field, value}` edits a field and `ui.dialog.confirm` presses OK.
@@ -525,7 +525,6 @@ impl Dialog {
             "sort" => Dialog::custom("sort", "Sort", json!({"header": true, "levels": [{"column": "A", "order": "asc"}]})),
             "nameManager" => Dialog::custom("nameManager", "Name Manager", json!({})),
             "manageRules" => Dialog::custom("manageRules", "Conditional Formatting Rules Manager", json!({})),
-            "commandSearch" => Dialog::custom("commandSearch", "Search Commands", json!({})),
             "agents" => Dialog::custom("agents", "Agent Control", json!({})),
             "about" => {
                 let mut d = Dialog::custom("about", "About GridCraft", json!({}));
@@ -678,7 +677,7 @@ pub fn show(app: &mut SheetApp, ctx: &egui::Context) {
     let width = match d.name.as_str() {
         "formatCells" => 560.0,
         "about" => 660.0,
-        "insertFunction" | "commandSearch" | "nameManager" | "manageRules" | "journal" | "agents" => 520.0,
+        "insertFunction" | "nameManager" | "manageRules" | "journal" | "agents" => 520.0,
         _ => 380.0,
     };
     let window = egui::Window::new(d.title.clone())
@@ -699,7 +698,6 @@ pub fn show(app: &mut SheetApp, ctx: &egui::Context) {
                 "sort" => sort(app, ui, &mut d, &mut confirm),
                 "nameManager" => name_manager(app, ui, &mut d, &mut open),
                 "manageRules" => manage_rules(app, ui),
-                "commandSearch" => command_search(app, ui, &mut d, &mut confirm),
                 "goalSeek" => goal_seek(app, ui, &mut d, &mut confirm),
                 "spelling" => spelling(app, ui, &mut d, &mut open),
                 "agents" => {
@@ -1600,45 +1598,6 @@ fn manage_rules(app: &mut SheetApp, ui: &mut egui::Ui) {
                 app.run_or_alert("home.manageRules", json!({"delete": i}));
             }
         });
-    }
-}
-
-fn command_search(app: &mut SheetApp, ui: &mut egui::Ui, d: &mut Dialog, confirm: &mut bool) {
-    let r = ui.add(egui::TextEdit::singleline(&mut d.search).desired_width(480.0).hint_text("Type a command, e.g. freeze, chart, bold…"));
-    r.request_focus();
-    let q = d.search.to_ascii_lowercase();
-    let cmds: Vec<(String, String, String)> = app
-        .session
-        .commands()
-        .into_iter()
-        .filter(|c| c.enabled)
-        .filter(|c| q.is_empty() || c.label.to_ascii_lowercase().contains(&q) || c.id.to_ascii_lowercase().contains(&q))
-        .map(|c| (c.id.to_string(), c.label.to_string(), c.menu.join(" › ")))
-        .take(40)
-        .collect();
-    if ui.input(|i| i.key_pressed(Key::ArrowDown)) {
-        d.list_index = (d.list_index + 1).min(cmds.len().saturating_sub(1));
-    }
-    if ui.input(|i| i.key_pressed(Key::ArrowUp)) {
-        d.list_index = d.list_index.saturating_sub(1);
-    }
-    egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
-        for (i, (id, label, menu)) in cmds.iter().enumerate() {
-            let r = ui.add(egui::Button::selectable(i == d.list_index, format!("{label}    {menu}")).min_size(vec2(480.0, 20.0)));
-            if r.clicked() {
-                d.list_index = i;
-                *confirm = true;
-            }
-            r.on_hover_text(id);
-        }
-    });
-    if ui.input(|i| i.key_pressed(Key::Enter)) {
-        *confirm = true;
-    }
-    if *confirm && let Some((id, ..)) = cmds.get(d.list_index) {
-        let id = id.clone();
-        app.dialog = None;
-        app.run_or_alert(&id, json!({}));
     }
 }
 

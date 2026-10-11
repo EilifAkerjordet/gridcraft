@@ -157,11 +157,12 @@ VISUAL, V-ROW or V-COLUMN, followed by any count or prefix typed so far. Many ke
 | `w` `b` / `]` `[` | Next / previous filled cell along the row / column (like Ctrl+arrow) |
 | `0` `^` `$` | First column / last filled cell in the row |
 | `gg` `G` (`12G` goes to row 12) | First / last used row |
-| `Ctrl-d` `Ctrl-u` / `H` `M` `L` | Half a screen down / up; top, middle, bottom row on screen |
+| `Ctrl-d` `Ctrl-u` / `Ctrl-f` `Ctrl-b` | Half a screen / a whole screen down / up |
+| `H` `M` `L` | Top, middle, bottom row on screen |
 | `go` + address (`goab24`) | Go to a cell; the cursor jumps as you type, any other key ends it |
 | `m` `a`–`z` / `'` or `` ` `` + letter | Mark the cell (or the visual selection) / go back to the mark |
 | `gl` | Back to where the last jump (`gg` `G` `go` marks `/` `n`) started |
-| `zt` `zz` `zb` | Scroll the cursor's row to the top / middle / bottom |
+| `zt` `zz` `zb` / `zh` `zl` | Scroll the cursor's row to the top / middle / bottom; scroll a column left / right |
 | `i` `a` `Enter` | Edit the cell, caret at the start / end |
 | `s` `cc` / `o` `O` | Replace the cell's content / insert a row below / above and type in it |
 | `x` / `dd` `dr` / `dc` | Cut the cell / delete rows / delete columns |
@@ -171,14 +172,36 @@ VISUAL, V-ROW or V-COLUMN, followed by any count or prefix typed so far. Many ke
 | `Pv` `Pf` `Pc` `Pt` | Paste values / formats / formulas / transposed at the cursor |
 | `{` `\|` `}` | Align left / centre / right |
 | `fh` `fl` / `fk` `fj` | Narrower / wider column; shorter / taller row (with a count: `3fl`) |
-| `Zr` `Zc` | Hide the row / column |
+| `Zr` `Zc` / `Sr` `Sc` | Hide the row / column; unhide the hidden rows / columns next to the cursor (or in the selection) |
+| `Ctrl-a` `Ctrl-x` | Add / subtract the count (1) to the number or date in the cell, or the first number in its text |
 | `>>` `<<` | Indent / outdent |
 | `u` `Ctrl-r` / `.` | Undo / redo / repeat the last change |
 | `v` `V` `Ctrl-v` | Select cells / whole rows / whole columns, then `y` `d` `c` `>` `<`, `{` `\|` `}`, `f`… or `Z`…; `o` swaps ends |
 | `gt` `gT` | Next / previous sheet |
-| `/` `n` `N` | Find, next match, previous match |
+| `/` `?` `n` `N` | Find forward / backward, next match, previous match |
+| `"a`–`"z` before `y` `d` `x` `p` `P` | Use that register instead of the last yank (`"ayy`, `"ap`) |
+| `q` + letter … `q` / `@` + letter, `@@` | Record a macro / play it (with a count: `3@a`), play the last one again |
+| `:` | Command line and command palette (below) |
 
 `P` followed by any key other than `v` `f` `c` `t` is a plain `P`, then that key does its own job.
+A macro remembers what you typed into cells while recording, so `qaccdone<Esc><Esc>jq` then
+`5@a` writes "done" into the next five rows.
+
+**Command line.** `:` opens the command palette as vim's command line. Type a command and press
+Enter: `:w` (or `:w path`), `:q`, `:q!`, `:wq`, `:e path`, `:sort` `:sort!` (descending),
+`:fill` `:fill right`, `:freeze` `:unfreeze`, `:42` (row 42), `:B7` or `:B7:D9` (go to or select),
+`:map`, and any command id with optional JSON parameters (`:home.bold`). Outside vim mode the
+same palette opens with ⌘⇧Space (Ctrl+Shift+Space) or the ribbon's search button, without the vim
+keys, and a leading `:` gives the command line there too. Anything else filters the list of every command, with its shortcut
+and its vim keys. Up/Down or `Ctrl-n` `Ctrl-p` (`Ctrl-j` `Ctrl-k`) choose, Enter runs, Escape
+(or Backspace on an empty line) closes. Commands that need settings open their dialog.
+
+**Mappings.** `:map lhs rhs` maps keys in the grid (vim's `noremap`: the right-hand side is not
+mapped again), `:unmap lhs` removes one, and `:map` alone lists them. They are saved with your
+settings as `vimMaps`. Keys use vim notation: `<CR>` `<Esc>` `<BS>` `<Space>` `<Bar>` `<lt>`
+`<C-x>`. A right-hand side of the form `:command<CR>` runs that line, so `:map <Space>b
+:home.bold<CR>` makes Space then b toggle bold. A key that starts a longer mapping waits for the
+next key.
 
 While typing in a cell, Escape switches to CELL mode, vim's normal mode on the cell's text:
 `h` `l` `0` `^` `$` `w` `b` `e` `W` `B` `E`, `f` `t` `F` `T` + character with `;` `,`, `x` `X`
@@ -190,8 +213,10 @@ reference into a range.
 
 Arrows, Tab, Delete, F-keys and Cmd shortcuts keep their Excel behaviour. Yanked cells also go to
 the system clipboard. On Windows and Linux Ctrl+V stays Paste: use `Ctrl-q` for column selection.
-Vim takes the Ctrl key there, so Ctrl+D, Ctrl+U and Ctrl+R mean half-page and redo instead of
-Fill Down, Underline and Fill Right while vim mode is on.
+Vim takes the Ctrl key there, so while vim mode is on Ctrl+D, Ctrl+U, Ctrl+R, Ctrl+F, Ctrl+B,
+Ctrl+A and Ctrl+X mean half-page, redo, page, increment and decrement instead of Fill Down,
+Underline, Fill Right, Find, Bold, Select All and Cut. `S` unhides; `cc` replaces the cell's
+content.
 
 ### Logs
 

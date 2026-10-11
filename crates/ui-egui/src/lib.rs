@@ -19,6 +19,7 @@ pub mod grid;
 pub mod i18n;
 pub mod icons;
 pub mod keytips;
+pub mod palette;
 pub mod panes;
 pub mod pivot_pane;
 pub mod ribbon;
@@ -63,6 +64,10 @@ pub struct UiState {
     pub interface_scale: u16,
     /// Vim-style modal keys in the grid (`view.vimMode`); see [`vim`].
     pub vim_mode: bool,
+    /// Vim key mappings (`:map`), left-hand side to right-hand side in vim key notation.
+    pub vim_maps: std::collections::BTreeMap<String, String>,
+    /// Commands most recently run from the palette, newest first.
+    pub recent_commands: Vec<String>,
 }
 
 pub const INTERFACE_SCALE_MIN: u16 = 75;
@@ -92,6 +97,8 @@ impl Default for UiState {
             language: i18n::Language::En,
             interface_scale: 100,
             vim_mode: false,
+            vim_maps: Default::default(),
+            recent_commands: Vec::new(),
         }
     }
 }
@@ -192,6 +199,8 @@ pub struct SheetApp {
     pub keytips: keytips::KeyTips,
     /// Vim mode state (mode, pending keys, register); never saved.
     pub vim: vim::Vim,
+    /// The open command palette.
+    pub palette: Option<palette::Palette>,
     pub(crate) shots: control::Shots,
     /// Chart selected on the sheet (id).
     pub selected_chart: Option<u32>,
@@ -226,6 +235,7 @@ impl SheetApp {
             name_box: None,
             keytips: keytips::KeyTips::default(),
             vim: vim::Vim::default(),
+            palette: None,
             shots: control::Shots::default(),
             selected_chart: None,
             started: now_ms(),
@@ -468,6 +478,7 @@ impl SheetApp {
                     dl(&name, &b);
                 }
             }
+            "commandSearch" => self.palette = Some(palette::Palette::new(false)),
             other => self.dialog = dialogs::Dialog::open(self, other, params),
         }
     }
@@ -680,6 +691,7 @@ impl SheetApp {
         let vim_enabled =
             self.keytips.prefix().is_none() && self.text_box_editor.is_none() && self.grid_owns_keys(&ctx) && !egui::Popup::is_any_open(&ctx);
         vim::process(self, &ctx, vim_enabled);
+        palette::show(self, &ctx);
         ribbon::title_bar(self, ui);
         ribbon::show(self, ui);
         if self.session.prefs.formula_bar {
@@ -736,6 +748,7 @@ impl SheetApp {
     /// No editor, dialog, text field or grid menu has the keyboard.
     fn grid_owns_keys(&self, ctx: &egui::Context) -> bool {
         self.editor.is_none()
+            && self.palette.is_none()
             && self.dialog.is_none()
             && self.message.is_none()
             && self.name_box.is_none()

@@ -36,6 +36,8 @@ pub enum Input {
     Enter,
     Backspace,
     Ctrl(char),
+    /// In a recorded macro: the text the cell editor committed after the key before it.
+    Typed(String),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -56,6 +58,8 @@ pub enum Motion {
     Bottom,
     HalfDown,
     HalfUp,
+    PageDown,
+    PageUp,
     ScreenTop,
     ScreenMiddle,
     ScreenBottom,
@@ -138,7 +142,10 @@ pub enum Action {
     VisualSwap,
     SheetNext(u32),
     SheetPrevious(u32),
-    Search(String),
+    Search {
+        what: String,
+        forward: bool,
+    },
     SearchNext {
         forward: bool,
         count: u32,
@@ -164,6 +171,20 @@ pub enum Action {
     Hide {
         cols: bool,
     },
+    /// `Sr` / `Sc`.
+    Unhide {
+        cols: bool,
+    },
+    /// `zh` / `zl`: scroll this many columns without moving the cursor.
+    ScrollCols(i32),
+    /// `Ctrl-a` / `Ctrl-x`.
+    Increment(i64),
+    /// `"a`: the next yank, delete or put uses register `a`.
+    Register(char),
+    /// `:` opens the palette as a command line.
+    Palette,
+    /// A mapping's `:command<CR>`.
+    Ex(String),
     Escape,
 }
 
@@ -187,6 +208,22 @@ enum Pending {
     Hide,
     /// `f`: resize.
     Size,
+    /// `S`: show (unhide).
+    Show,
+    /// `"`: a register name follows.
+    Register,
+    /// `q`: start recording into a register.
+    Record,
+    /// `@`: play a register.
+    Play,
+}
+
+/// What a mapping's left-hand side turns into.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Rhs {
+    Keys(Vec<Input>),
+    /// `:sort<CR>`: a command line, run without opening the palette.
+    Ex(String),
 }
 
 #[derive(Clone, Debug, Default)]
@@ -202,6 +239,9 @@ pub struct Vim {
     count: Option<u32>,
     pending: Option<Pending>,
     search: Option<String>,
+    /// The open prompt is `?` (backward), and the direction `n` searches in.
+    search_back: bool,
+    last_search_back: bool,
     /// The `go` address prompt while it is open, and whether it has moved the cursor yet.
     goto: Option<String>,
     goto_moved: bool,
@@ -214,11 +254,22 @@ pub struct Vim {
     /// keeps the shape of the selection it is drawing.
     anchor: Option<CellRef>,
     shape: Option<Visual>,
-    register: Option<Register>,
     insert_cell: Option<(usize, CellRef)>,
     marks: std::collections::HashMap<char, MarkPos>,
     /// Sheet and cell before the last jump, for `gl`.
     last_jump: Option<(usize, CellRef)>,
+    /// Named registers; `"` is the unnamed one every yank and delete writes.
+    registers: std::collections::HashMap<char, Register>,
+    next_register: Option<char>,
+    /// Macro being recorded (register, keys so far), recorded macros and the last one played.
+    recording: Option<(char, Vec<Input>)>,
+    macros: std::collections::HashMap<char, Vec<Input>>,
+    last_macro: Option<char>,
+    macro_depth: u32,
+    /// Key mappings, parsed from the saved ones in `source`, and keys waiting to complete one.
+    maps: Vec<(Vec<Input>, Rhs)>,
+    maps_source: std::collections::BTreeMap<String, String>,
+    map_buffer: Vec<Input>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -261,8 +312,15 @@ impl Vim {
             Some(Pending::Scroll) => "z",
             Some(Pending::Hide) => "Z",
             Some(Pending::Size) => "f",
+            Some(Pending::Show) => "S",
+            Some(Pending::Register) => "\"",
+            Some(Pending::Record) => "q",
+            Some(Pending::Play) => "@",
             None => "",
         });
+        for input in &self.map_buffer {
+            s.push_str(&key_name(input));
+        }
         if let Some(address) = &self.goto {
             s.push_str("go");
             s.push_str(address);
@@ -272,17 +330,102 @@ impl Vim {
 
     pub fn reset(&mut self) {
         *self = Vim {
-            register: self.register.take(),
+            registers: std::mem::take(&mut self.registers),
             last_change: self.last_change.take(),
             marks: std::mem::take(&mut self.marks),
             last_jump: self.last_jump.take(),
+            macros: std::mem::take(&mut self.macros),
+            last_macro: self.last_macro.take(),
+            maps: std::mem::take(&mut self.maps),
+            maps_source: std::mem::take(&mut self.maps_source),
             ..Vim::default()
         };
+    }
+
+    /// The register a macro is being recorded into.
+    pub fn recording(&self) -> Option<char> {
+        self.recording.as_ref().map(|(r, _)| *r)
+    }
+
+    /// Replaces the key mappings with `maps` (left-hand side to right-hand side, in key
+    /// notation). Mappings that do not parse are left out.
+    pub fn set_maps(&mut self, maps: &std::collections::BTreeMap<String, String>) {
+        self.maps = maps
+            .iter()
+            .filter_map(|(lhs, rhs)| {
+                let lhs = parse_keys(lhs);
+                let rhs = parse_rhs(rhs)?;
+                (!lhs.is_empty()).then_some((lhs, rhs))
+            })
+            .collect();
+        self.maps_source = maps.clone();
+        self.map_buffer.clear();
+    }
+
+    fn idle(&self) -> bool {
+        self.pending.is_none() && self.search.is_none() && self.goto.is_none()
+    }
+
+    /// A key the user pressed: recorded into a macro, then through the key mappings.
+    pub fn press(&mut self, input: Input) -> Vec<Action> {
+        if self.macro_depth == 0
+            && let Some((_, keys)) = self.recording.as_mut()
+        {
+            keys.push(input.clone());
+        }
+        let mut out = Vec::new();
+        self.mapped(input, &mut out);
+        out
+    }
+
+    fn mapped(&mut self, input: Input, out: &mut Vec<Action>) {
+        let starts_map = self.idle() && self.maps.iter().any(|(lhs, _)| lhs.first() == Some(&input));
+        if self.map_buffer.is_empty() && !starts_map {
+            out.extend(self.feed(input));
+            return;
+        }
+        self.map_buffer.push(input);
+        let buffer = self.map_buffer.clone();
+        // Wait while a longer mapping could still match (there is no timeout).
+        if self.maps.iter().any(|(lhs, _)| lhs.len() > buffer.len() && lhs.starts_with(&buffer)) {
+            return;
+        }
+        self.map_buffer.clear();
+        let fired =
+            (1..=buffer.len()).rev().find_map(|n| self.maps.iter().find(|(lhs, _)| lhs.as_slice() == &buffer[..n]).map(|(_, rhs)| (n, rhs.clone())));
+        let rest = match fired {
+            Some((n, rhs)) => {
+                match rhs {
+                    // Right-hand sides are not mapped again (vim's noremap).
+                    Rhs::Keys(keys) => {
+                        for key in keys {
+                            out.extend(self.feed(key));
+                        }
+                    }
+                    Rhs::Ex(line) => out.push(Action::Ex(line)),
+                }
+                &buffer[n..]
+            }
+            None => {
+                if let Some(first) = buffer.first() {
+                    out.extend(self.feed(first.clone()));
+                }
+                buffer.get(1..).unwrap_or_default()
+            }
+        };
+        for key in rest.iter().cloned() {
+            self.mapped(key, out);
+        }
     }
 
     /// The last change entered insert mode and its edit has ended with `text` in the cell.
     pub fn inserted(&mut self, text: String) {
         self.awaiting_insert = false;
+        if self.macro_depth == 0
+            && let Some((_, keys)) = self.recording.as_mut()
+        {
+            keys.push(Input::Typed(text.clone()));
+        }
         if let Some(change) = self.last_change.as_mut() {
             change.text = Some(text);
         }
@@ -290,6 +433,9 @@ impl Vim {
 
     pub fn feed(&mut self, input: Input) -> Vec<Action> {
         let mut out = Vec::new();
+        if matches!(input, Input::Typed(_)) {
+            return out;
+        }
         if self.replaying.is_none() {
             self.record.push(input.clone());
         }
@@ -332,7 +478,8 @@ impl Vim {
                 }
                 Input::Enter => {
                     if !query.is_empty() {
-                        out.push(Action::Search(query.clone()));
+                        out.push(Action::Search { what: query.clone(), forward: !self.search_back });
+                        self.last_search_back = self.search_back;
                     }
                     self.search = None;
                 }
@@ -391,6 +538,8 @@ impl Vim {
             Input::Char('L') => Motion::ScreenBottom,
             Input::Ctrl('d') => Motion::HalfDown,
             Input::Ctrl('u') => Motion::HalfUp,
+            Input::Ctrl('f') => Motion::PageDown,
+            Input::Ctrl('b') => Motion::PageUp,
             _ => return None,
         })
     }
@@ -412,7 +561,9 @@ impl Vim {
             Input::Char('\'' | '`') => Pending::Jump,
             Input::Char('m') => Pending::Mark,
             Input::Char('Z') => Pending::Hide,
+            Input::Char('S') => Pending::Show,
             Input::Char('f') => Pending::Size,
+            Input::Char('"') => Pending::Register,
             _ => return None,
         };
         self.pending = Some(prefix);
@@ -434,6 +585,27 @@ impl Vim {
                 Mode::Normal => self.normal(input, out),
                 Mode::Visual(kind) => self.visual(kind, input, out),
             };
+        }
+        match (pending, &input) {
+            (Pending::Register, Input::Char(c @ ('a'..='z' | '"'))) => {
+                // The count and the command still to come stay pending.
+                out.push(Action::Register(*c));
+                return Done::Pending;
+            }
+            (Pending::Record, Input::Char(c @ 'a'..='z')) => {
+                self.count = None;
+                self.recording = Some((*c, Vec::new()));
+                return Done::Other;
+            }
+            (Pending::Play, Input::Char(c @ ('a'..='z' | '@'))) => {
+                let name = if *c == '@' { self.last_macro } else { Some(*c) };
+                let times = self.take_count().min(100);
+                if let Some(name) = name {
+                    self.play(name, times, out);
+                }
+                return Done::Other;
+            }
+            _ => {}
         }
         let count = self.count.take();
         let n = count.unwrap_or(1);
@@ -457,6 +629,8 @@ impl Vim {
             (Pending::Scroll, 'z' | '.') => (Action::Scroll(Scroll::Middle), Done::Other),
             (Pending::Scroll, 't') => (Action::Scroll(Scroll::Top), Done::Other),
             (Pending::Scroll, 'b' | '-') => (Action::Scroll(Scroll::Bottom), Done::Other),
+            (Pending::Scroll, 'h') => (Action::ScrollCols(-by), Done::Other),
+            (Pending::Scroll, 'l') => (Action::ScrollCols(by), Done::Other),
             (Pending::Mark, 'a'..='z') => (Action::SetMark(c), Done::Other),
             (Pending::Jump, 'a'..='z') => (Action::JumpMark(c), Done::Other),
             (Pending::Delete, 'd' | 'r') => (Action::DeleteRows(n), Done::Change),
@@ -472,11 +646,12 @@ impl Vim {
             (Pending::Paste, 't') => (Action::PasteSpecial(Paste::Transposed), Done::Change),
             (Pending::Paste, 'c') => (Action::PasteSpecial(Paste::Formulas), Done::Change),
             (Pending::Hide, 'r' | 'c') => (Action::Hide { cols: c == 'c' }, Done::Change),
+            (Pending::Show, 'r' | 'c') => (Action::Unhide { cols: c == 'c' }, Done::Change),
             (Pending::Size, 'h' | 'l') => (Action::Resize { cols: true, by: if c == 'l' { by } else { -by } }, Done::Change),
             (Pending::Size, 'j' | 'k') => (Action::Resize { cols: false, by: if c == 'j' { by } else { -by } }, Done::Change),
             _ => return Done::Other,
         };
-        let ends_visual = matches!(action, Action::Hide { .. } | Action::Resize { .. });
+        let ends_visual = matches!(action, Action::Hide { .. } | Action::Unhide { .. } | Action::Resize { .. });
         out.push(action);
         if ends_visual && matches!(self.mode, Mode::Visual(_)) {
             self.leave_visual(out);
@@ -500,7 +675,7 @@ impl Vim {
         let (action, done) = match input {
             Input::Char('i' | 'I') => (edit(Edit::Insert), Done::Change),
             Input::Char('a' | 'A') | Input::Enter => (edit(Edit::Append), Done::Change),
-            Input::Char('s' | 'S') => (edit(Edit::Substitute), Done::Change),
+            Input::Char('s') => (edit(Edit::Substitute), Done::Change),
             Input::Char('o') => (edit(Edit::OpenBelow), Done::Change),
             Input::Char('O') => (edit(Edit::OpenAbove), Done::Change),
             Input::Char('x') => (Action::Clear(self.take_count()), Done::Change),
@@ -511,11 +686,35 @@ impl Vim {
             Input::Char('}') => (Action::Align(Align::Right), Done::Change),
             Input::Char('u') => (Action::Undo(self.take_count()), Done::Other),
             Input::Ctrl('r') => (Action::Redo(self.take_count()), Done::Other),
-            Input::Char('n') => (Action::SearchNext { forward: true, count: self.take_count() }, Done::Other),
-            Input::Char('N') => (Action::SearchNext { forward: false, count: self.take_count() }, Done::Other),
-            Input::Char('/') => {
+            Input::Char('n') => (Action::SearchNext { forward: !self.last_search_back, count: self.take_count() }, Done::Other),
+            Input::Char('N') => (Action::SearchNext { forward: self.last_search_back, count: self.take_count() }, Done::Other),
+            Input::Char(c @ ('/' | '?')) => {
                 self.count = None;
                 self.search = Some(String::new());
+                self.search_back = c == '?';
+                return Done::Pending;
+            }
+            Input::Ctrl('a') => (Action::Increment(i64::from(self.take_count())), Done::Change),
+            Input::Ctrl('x') => (Action::Increment(-i64::from(self.take_count())), Done::Change),
+            Input::Char(':') => {
+                self.count = None;
+                return self.palette(out);
+            }
+            Input::Char('q') if self.recording.is_some() => {
+                self.count = None;
+                if let Some((name, mut keys)) = self.recording.take() {
+                    // The `q` that stops recording is not part of the macro.
+                    keys.pop();
+                    self.macros.insert(name, keys);
+                }
+                return Done::Other;
+            }
+            Input::Char('q') => {
+                self.pending = Some(Pending::Record);
+                return Done::Pending;
+            }
+            Input::Char('@') => {
+                self.pending = Some(Pending::Play);
                 return Done::Pending;
             }
             Input::Char('.') => {
@@ -580,13 +779,14 @@ impl Vim {
         let op = match input {
             Input::Char('y' | 'Y') => Op::Yank,
             Input::Char('d' | 'x' | 'D' | 'X') => Op::Delete,
-            Input::Char('c' | 's' | 'C' | 'S') => Op::Change,
+            Input::Char('c' | 's' | 'C') => Op::Change,
             Input::Char('>') => Op::Indent,
             Input::Char('<') => Op::Outdent,
             Input::Char('o') => {
                 out.push(Action::VisualSwap);
                 return Done::Pending;
             }
+            Input::Char(':') => return self.palette(out),
             Input::Char(c @ ('{' | '|' | '}')) => {
                 out.push(Action::Align(match c {
                     '{' => Align::Left,
@@ -625,6 +825,40 @@ impl Vim {
             out.push(Action::Edit(Edit::Substitute, self.repeat_text()));
         }
         if op == Op::Yank { Done::Other } else { Done::Change }
+    }
+
+    /// `:` keeps the selection (commands run on it) but leaves visual mode.
+    fn palette(&mut self, out: &mut Vec<Action>) -> Done {
+        self.mode = Mode::Normal;
+        self.pending = None;
+        out.push(Action::Palette);
+        Done::Other
+    }
+
+    fn play(&mut self, name: char, times: u32, out: &mut Vec<Action>) {
+        let Some(keys) = self.macros.get(&name).cloned() else { return };
+        if self.macro_depth >= 10 {
+            return;
+        }
+        self.last_macro = Some(name);
+        self.macro_depth += 1;
+        let saved = self.replaying.take();
+        for _ in 0..times.max(1) {
+            for (i, key) in keys.iter().enumerate() {
+                if matches!(key, Input::Typed(_)) {
+                    continue;
+                }
+                // An edit recorded with its text writes that text instead of opening the editor.
+                let text = match keys.get(i + 1) {
+                    Some(Input::Typed(t)) => Some(t.clone()),
+                    _ => None,
+                };
+                self.replaying = Some(text);
+                self.mapped(key.clone(), out);
+            }
+        }
+        self.replaying = saved;
+        self.macro_depth -= 1;
     }
 
     fn repeat_text(&self) -> Option<String> {
@@ -684,6 +918,10 @@ pub fn take_inputs(ctx: &Context) -> Vec<Input> {
                         Key::D => 'd',
                         Key::U => 'u',
                         Key::R => 'r',
+                        Key::F => 'f',
+                        Key::B => 'b',
+                        Key::A => 'a',
+                        Key::X => 'x',
                         Key::V if mac => 'v',
                         Key::Q => 'q',
                         _ => return true,
@@ -736,9 +974,14 @@ pub fn status_keys(app: &SheetApp) -> String {
         return if ed.vim.is_normal() { ed.vim.pending_keys() } else { String::new() };
     }
     if let Some(query) = app.vim.search() {
-        return format!("/{query}");
+        return format!("{}{query}", if app.vim.search_back { '?' } else { '/' });
     }
-    app.vim.pending_keys()
+    let keys = app.vim.pending_keys();
+    match app.vim.recording() {
+        Some(r) if keys.is_empty() => format!("recording @{r}"),
+        Some(r) => format!("recording @{r}  {keys}"),
+        None => keys,
+    }
 }
 
 /// Runs vim for one frame. `enabled` is false when anything but the grid owns the keyboard.
@@ -766,10 +1009,19 @@ pub fn process(app: &mut SheetApp, ctx: &Context, enabled: bool) {
         app.vim.anchor = None;
         app.vim.shape = None;
     }
-    for input in take_inputs(ctx) {
-        let actions = app.vim.feed(input);
+    if app.vim.maps_source != app.ui.vim_maps {
+        let maps = app.ui.vim_maps.clone();
+        app.vim.set_maps(&maps);
+    }
+    let mut inputs = take_inputs(ctx).into_iter();
+    while let Some(input) = inputs.next() {
+        let actions = app.vim.press(input);
         for action in actions {
             run(app, ctx, action);
+        }
+        // Keys typed after `:` in the same frame belong to the palette.
+        if let Some(p) = app.palette.as_mut() {
+            p.query.extend(inputs.by_ref().filter_map(|i| if let Input::Char(c) = i { Some(c) } else { None }));
         }
     }
 }
@@ -788,6 +1040,25 @@ fn used_end(app: &SheetApp) -> CellRef {
 }
 
 fn run(app: &mut SheetApp, ctx: &Context, action: Action) {
+    let uses_register = matches!(
+        action,
+        Action::Clear(_)
+            | Action::DeleteRows(_)
+            | Action::DeleteCols(_)
+            | Action::YankRows(_)
+            | Action::YankCols(_)
+            | Action::Put { .. }
+            | Action::PasteSpecial(_)
+            | Action::VisualOp(_)
+            | Action::Escape
+    );
+    act(app, ctx, action);
+    if uses_register {
+        app.vim.next_register = None;
+    }
+}
+
+fn act(app: &mut SheetApp, ctx: &Context, action: Action) {
     match action {
         Action::Move(motion, count) => {
             if matches!(motion, Motion::Top | Motion::Bottom) {
@@ -872,9 +1143,13 @@ fn run(app: &mut SheetApp, ctx: &Context, action: Action) {
         Action::VisualOp(op) => visual_op(app, ctx, op),
         Action::SheetNext(count) => repeat_command(app, "sheet.next", count),
         Action::SheetPrevious(count) => repeat_command(app, "sheet.previous", count),
-        Action::Search(what) => {
+        Action::Search { what, forward } => {
             remember_jump(app);
-            find(app, json!({"what": what}));
+            if forward {
+                find(app, json!({"what": what}));
+            } else {
+                find_previous(app, &json!({"what": what}));
+            }
         }
         Action::SearchNext { forward, count } => {
             let Some(last) = app.session.last_find.clone() else {
@@ -954,6 +1229,19 @@ fn run(app: &mut SheetApp, ctx: &Context, action: Action) {
         }
         Action::Resize { cols, by } => resize(app, cols, by),
         Action::Hide { cols } => app.run_or_alert(if cols { "home.hideColumns" } else { "home.hideRows" }, json!({})),
+        Action::Unhide { cols } => unhide(app, cols),
+        Action::ScrollCols(by) => app.grid.scroll_cols = Some(by),
+        Action::Increment(by) => increment(app, by),
+        Action::Register(name) => app.vim.next_register = Some(name),
+        Action::Palette => {
+            app.vim.anchor = None;
+            app.vim.shape = None;
+            app.palette = Some(crate::palette::Palette::new(true));
+        }
+        Action::Ex(line) => match crate::palette::parse_ex(&line) {
+            Some(ex) => crate::palette::run_ex(app, ex),
+            None => app.toast = Some((format!("Not a command: {line}"), crate::now_ms())),
+        },
         Action::Escape => {
             app.session.clipboard = None;
             app.session.format_painter = None;
@@ -1043,6 +1331,13 @@ fn move_cursor(app: &mut SheetApp, motion: Motion, count: Option<u32>) {
         }
         Motion::HalfDown => step(app, half * n, 0, false),
         Motion::HalfUp => step(app, -half * n, 0, false),
+        Motion::PageDown | Motion::PageUp => {
+            let page = (bottom.saturating_sub(top).max(1)) as i64;
+            let down = motion == Motion::PageDown;
+            step(app, if down { page * n } else { -page * n }, 0, false);
+            // As in vim: the new page starts at the cursor (Ctrl-f) or ends at it (Ctrl-b).
+            app.grid.scroll_to = Some(if down { 0.0 } else { 1.0 });
+        }
         Motion::ScreenTop => select_cell(app, CellRef::new(top, a.col)),
         Motion::ScreenMiddle => select_cell(app, CellRef::new(top + (bottom.saturating_sub(top)) / 2, a.col)),
         Motion::ScreenBottom => select_cell(app, CellRef::new(bottom, a.col)),
@@ -1089,7 +1384,11 @@ fn yank(app: &mut SheetApp, ctx: &Context, range: RangeRef, kind: Visual) {
                 ctx.copy_text(text.to_string());
             }
             if let Some(clip) = app.session.clipboard.take() {
-                app.vim.register = Some(Register { clip, kind });
+                let register = Register { clip, kind };
+                if let Some(name) = app.vim.next_register.filter(|n| *n != '"') {
+                    app.vim.registers.insert(name, register.clone());
+                }
+                app.vim.registers.insert('"', register);
             }
         }
         Err(e) => app.message = Some(("GridCraft".into(), crate::clean_error(&e))),
@@ -1097,10 +1396,7 @@ fn yank(app: &mut SheetApp, ctx: &Context, range: RangeRef, kind: Visual) {
 }
 
 fn put(app: &mut SheetApp, before: bool, count: u32) {
-    let Some(reg) = app.vim.register.clone() else {
-        app.toast = Some(("Nothing to put".into(), crate::now_ms()));
-        return;
-    };
+    let Some(reg) = register(app) else { return };
     let a = active(app);
     let src = reg.clip.range;
     restore(app, &reg);
@@ -1138,10 +1434,7 @@ fn put(app: &mut SheetApp, before: bool, count: u32) {
 /// `Pv` / `Pf` / `Pt` / `Pc`: Paste Special from vim's register at the cursor (whole lines at
 /// the start of the cursor's row or column).
 fn paste_special(app: &mut SheetApp, kind: Paste) {
-    let Some(reg) = app.vim.register.clone() else {
-        app.toast = Some(("Nothing to put".into(), crate::now_ms()));
-        return;
-    };
+    let Some(reg) = register(app) else { return };
     let a = active(app);
     let at = match reg.kind {
         Visual::Cells => a,
@@ -1158,6 +1451,192 @@ fn paste_special(app: &mut SheetApp, kind: Paste) {
     app.run_or_alert("edit.pasteSpecial", json!({"what": what, "transpose": transpose, "at": at.a1()}));
     app.session.clipboard = None;
     app.grid.ensure_visible = true;
+}
+
+/// The register the next put reads (`"a`, else the unnamed one); a toast when it is empty.
+fn register(app: &mut SheetApp) -> Option<Register> {
+    let name = app.vim.next_register.unwrap_or('"');
+    let reg = app.vim.registers.get(&name).cloned();
+    if reg.is_none() {
+        let msg = if name == '"' { "Nothing to put".to_string() } else { format!("Register {name} is empty") };
+        app.toast = Some((msg, crate::now_ms()));
+    }
+    reg
+}
+
+/// `Ctrl-a` / `Ctrl-x`: a number (or date) cell changes by `by`; in text, the first number.
+fn increment(app: &mut SheetApp, by: i64) {
+    let a = active(app);
+    let Some(sh) = app.session.active().and_then(|d| d.wb.active()) else { return };
+    let input = sh.cell(a).map(|c| c.input_text()).unwrap_or_default();
+    if input.starts_with('=') {
+        app.toast = Some(("Ctrl-a and Ctrl-x change numbers, not formulas".into(), crate::now_ms()));
+        return;
+    }
+    if let gridcraft_engine::core::Value::Number(n) = sh.value(a) {
+        let value = n + by as f64;
+        app.run_or_alert("range.setValues", json!({"range": a.a1(), "values": [[value]]}));
+    } else if let Some(text) = bump_number(&input, by) {
+        app.run_or_alert("cell.set", json!({"cell": a.a1(), "input": text}));
+    } else {
+        app.toast = Some(("No number in this cell".into(), crate::now_ms()));
+    }
+}
+
+/// `text` with its first whole number changed by `by` (a `-` right before it counts).
+pub fn bump_number(text: &str, by: i64) -> Option<String> {
+    let start = text.find(|c: char| c.is_ascii_digit())?;
+    let end = text[start..].find(|c: char| !c.is_ascii_digit()).map_or(text.len(), |e| start + e);
+    let negative = text[..start].ends_with('-') && text[..start.saturating_sub(1)].chars().last().is_none_or(|c| !c.is_alphanumeric());
+    let from = if negative { start - 1 } else { start };
+    let n: i64 = text[start..end].parse().ok()?;
+    let n = if negative { -n } else { n };
+    Some(format!("{}{}{}", &text[..from], n.saturating_add(by), &text[end..]))
+}
+
+/// `Sr` / `Sc`: unhide the hidden rows or columns next to the cursor (in the selection in
+/// visual mode).
+fn unhide(app: &mut SheetApp, cols: bool) {
+    let id = if cols { "home.unhideColumns" } else { "home.unhideRows" };
+    if app.vim.shape.is_some() {
+        app.run_or_alert(id, json!({}));
+        return;
+    }
+    let a = active(app);
+    let Some(sh) = app.session.active().and_then(|d| d.wb.active()) else { return };
+    let hidden = |i: u32| if cols { sh.is_col_hidden(i) } else { sh.is_row_hidden(i) };
+    let (at, max) = if cols { (a.col, MAX_COLS - 1) } else { (a.row, MAX_ROWS - 1) };
+    let (mut first, mut last) = (at, at);
+    while first > 0 && hidden(first - 1) && at - first < 100_000 {
+        first -= 1;
+    }
+    while last < max && hidden(last + 1) && last - at < 100_000 {
+        last += 1;
+    }
+    if first == at && last == at && !hidden(at) {
+        let what = if cols { "columns" } else { "rows" };
+        app.toast = Some((format!("No hidden {what} next to the cursor"), crate::now_ms()));
+        return;
+    }
+    if cols {
+        app.run_or_alert(id, json!({"cols": cols_a1(first, last)}));
+    } else {
+        app.run_or_alert(id, json!({"rows": lines_a1(first, last)}));
+    }
+}
+
+/// Moves the cursor to `cell` as a jump (`gl` comes back).
+pub(crate) fn jump_to(app: &mut SheetApp, cell: CellRef) {
+    remember_jump(app);
+    select_cell(app, cell);
+    app.grid.ensure_visible = true;
+}
+
+/// The vim keys for a command, for the palette: built in, and mappings to `:<command><CR>`.
+pub fn keys_for(id: &str, maps: &std::collections::BTreeMap<String, String>) -> Option<String> {
+    let builtin = match id {
+        "edit.undo" => "u",
+        "edit.redo" => "Ctrl-r",
+        "edit.copy" => "y",
+        "edit.paste" => "p",
+        "edit.pasteSpecial" => "Pv Pf Pc Pt",
+        "edit.clearContents" => "x",
+        "edit.find" => "/ ?",
+        "edit.goTo" => "go",
+        "home.alignLeft" => "{",
+        "home.alignCenter" => "|",
+        "home.alignRight" => "}",
+        "home.increaseIndent" => ">>",
+        "home.decreaseIndent" => "<<",
+        "home.insertRows" => "+r",
+        "home.insertColumns" => "+c",
+        "home.deleteRows" => "dr",
+        "home.deleteColumns" => "dc",
+        "home.hideRows" => "Zr",
+        "home.hideColumns" => "Zc",
+        "home.unhideRows" => "Sr",
+        "home.unhideColumns" => "Sc",
+        "home.columnWidth" => "fh fl",
+        "home.rowHeight" => "fk fj",
+        "sheet.next" => "gt",
+        "sheet.previous" => "gT",
+        "file.save" => ":w",
+        "file.close" => ":q",
+        "file.open" => ":e",
+        "data.sortAscending" => ":sort",
+        "data.sortDescending" => ":sort!",
+        "edit.fillDown" => ":fill",
+        "edit.fillRight" => ":fill right",
+        "view.freezePanes" => ":freeze",
+        "view.unfreezePanes" => ":unfreeze",
+        _ => "",
+    };
+    let mapped = maps.iter().filter(|(_, rhs)| parse_rhs(rhs) == Some(Rhs::Ex(id.to_string()))).map(|(lhs, _)| lhs.as_str());
+    let all: Vec<&str> = mapped.chain((!builtin.is_empty()).then_some(builtin)).collect();
+    (!all.is_empty()).then(|| all.join(" "))
+}
+
+/// Keys in vim notation: plain characters, `<CR>` `<Esc>` `<BS>` `<Space>` `<Bar>` `<lt>` and
+/// `<C-x>`. An unknown `<…>` is taken literally.
+pub fn parse_keys(text: &str) -> Vec<Input> {
+    let mut out = Vec::new();
+    let mut rest = text;
+    while let Some(c) = rest.chars().next() {
+        if c == '<'
+            && let Some(end) = rest.find('>')
+            && let Some(key) = named_key(&rest[1..end])
+        {
+            out.push(key);
+            rest = &rest[end + 1..];
+            continue;
+        }
+        out.push(Input::Char(c));
+        rest = &rest[c.len_utf8()..];
+    }
+    out
+}
+
+fn named_key(name: &str) -> Option<Input> {
+    let lower = name.to_ascii_lowercase();
+    Some(match lower.as_str() {
+        "cr" | "enter" | "return" => Input::Enter,
+        "esc" => Input::Esc,
+        "bs" => Input::Backspace,
+        "space" => Input::Char(' '),
+        "bar" => Input::Char('|'),
+        "lt" => Input::Char('<'),
+        _ => {
+            let c = lower.strip_prefix("c-")?;
+            let mut chars = c.chars();
+            let (Some(c), None) = (chars.next(), chars.next()) else { return None };
+            Input::Ctrl(c)
+        }
+    })
+}
+
+fn parse_rhs(text: &str) -> Option<Rhs> {
+    let lower = text.to_ascii_lowercase();
+    if let Some(line) = text.strip_prefix(':')
+        && (lower.ends_with("<cr>") || lower.ends_with("<enter>"))
+        && let Some(end) = line.rfind('<')
+    {
+        return Some(Rhs::Ex(line[..end].trim().to_string()));
+    }
+    let keys = parse_keys(text);
+    (!keys.is_empty()).then_some(Rhs::Keys(keys))
+}
+
+/// How a key looks in the status bar.
+fn key_name(input: &Input) -> String {
+    match input {
+        Input::Char(' ') => "<Space>".into(),
+        Input::Char(c) => c.to_string(),
+        Input::Esc => "<Esc>".into(),
+        Input::Enter => "<CR>".into(),
+        Input::Backspace => "<BS>".into(),
+        Input::Ctrl(c) => format!("<C-{c}>"),
+        Input::Typed(_) => String::new(),
+    }
 }
 
 /// Structural edits drop the engine clipboard; put it back before each paste.
@@ -1415,7 +1894,7 @@ mod tests {
         assert_eq!(vim.search(), Some("ab"));
         vim.feed(Input::Backspace);
         assert_eq!(vim.search(), Some("a"));
-        assert_eq!(vim.feed(Input::Enter), vec![Action::Search("a".into())]);
+        assert_eq!(vim.feed(Input::Enter), vec![Action::Search { what: "a".into(), forward: true }]);
         assert_eq!(vim.search(), None);
         assert_eq!(feed(&mut vim, "n"), vec![Action::SearchNext { forward: true, count: 1 }]);
         assert_eq!(feed(&mut vim, "2N"), vec![Action::SearchNext { forward: false, count: 2 }]);
@@ -1427,8 +1906,128 @@ mod tests {
     #[test]
     fn unknown_keys_do_nothing_and_drop_the_count() {
         let mut vim = Vim::default();
-        assert_eq!(feed(&mut vim, "5q"), vec![]);
+        assert_eq!(feed(&mut vim, "5Q"), vec![]);
         assert_eq!(feed(&mut vim, "j"), vec![Action::Move(Motion::Down, None)]);
+    }
+
+    fn press(vim: &mut Vim, keys: &str) -> Vec<Action> {
+        parse_keys(keys).into_iter().flat_map(|k| vim.press(k)).collect()
+    }
+
+    #[test]
+    fn backward_search_flips_n() {
+        let mut vim = Vim::default();
+        feed(&mut vim, "?ab");
+        assert_eq!(vim.feed(Input::Enter), vec![Action::Search { what: "ab".into(), forward: false }]);
+        assert_eq!(feed(&mut vim, "n"), vec![Action::SearchNext { forward: false, count: 1 }]);
+        assert_eq!(feed(&mut vim, "N"), vec![Action::SearchNext { forward: true, count: 1 }]);
+    }
+
+    #[test]
+    fn named_registers_prefix_the_command() {
+        let mut vim = Vim::default();
+        assert_eq!(feed(&mut vim, "\"a"), vec![Action::Register('a')]);
+        assert_eq!(vim.pending_keys(), "");
+        assert_eq!(feed(&mut vim, "2yy"), vec![Action::YankRows(2)]);
+        assert_eq!(feed(&mut vim, "\"b3"), vec![Action::Register('b')]);
+        assert_eq!(feed(&mut vim, "dr"), vec![Action::DeleteRows(3)]);
+        assert_eq!(feed(&mut vim, "\"1j"), vec![Action::Move(Motion::Down, None)]);
+    }
+
+    #[test]
+    fn macros_record_and_replay_keys_and_typed_text() {
+        let mut vim = Vim::default();
+        assert_eq!(press(&mut vim, "qa"), vec![]);
+        assert_eq!(vim.recording(), Some('a'));
+        press(&mut vim, "jo");
+        vim.inserted("hi".into());
+        assert_eq!(press(&mut vim, "q"), vec![]);
+        assert_eq!(vim.recording(), None);
+        let once = vec![Action::Move(Motion::Down, None), Action::Edit(Edit::OpenBelow, Some("hi".into()))];
+        assert_eq!(press(&mut vim, "@a"), once);
+        assert_eq!(press(&mut vim, "2@@"), [once.clone(), once].concat());
+        assert_eq!(press(&mut vim, "@z"), vec![]);
+    }
+
+    #[test]
+    fn a_macro_that_plays_itself_stops() {
+        let mut vim = Vim::default();
+        press(&mut vim, "qaj@aq");
+        let out = press(&mut vim, "@a");
+        assert!(!out.is_empty() && out.len() <= 20, "{out:?}");
+    }
+
+    #[test]
+    fn mappings_wait_for_longer_matches_and_replay_the_rest() {
+        let mut vim = Vim::default();
+        let maps = [("J", "5j"), ("gx", ":edit.copy<CR>"), ("gxx", "yy"), ("<C-s>", ":w<CR>")]
+            .into_iter()
+            .map(|(l, r)| (l.to_string(), r.to_string()))
+            .collect();
+        vim.set_maps(&maps);
+        assert_eq!(press(&mut vim, "J"), vec![Action::Move(Motion::Down, Some(5))]);
+        assert_eq!(press(&mut vim, "gx"), vec![]);
+        assert_eq!(press(&mut vim, "x"), vec![Action::YankRows(1)]);
+        assert_eq!(press(&mut vim, "gx"), vec![]);
+        assert_eq!(press(&mut vim, "j"), vec![Action::Ex("edit.copy".into()), Action::Move(Motion::Down, None)]);
+        assert_eq!(press(&mut vim, "<C-s>"), vec![Action::Ex("w".into())]);
+        assert_eq!(press(&mut vim, "gt"), feed(&mut Vim::default(), "gt"));
+        // A mapped key in the middle of a command is the plain key.
+        assert_eq!(press(&mut vim, "dJ"), vec![]);
+    }
+
+    #[test]
+    fn key_notation() {
+        assert_eq!(
+            parse_keys("a<CR><esc><C-x><lt><Space><Nope>"),
+            vec![
+                Input::Char('a'),
+                Input::Enter,
+                Input::Esc,
+                Input::Ctrl('x'),
+                Input::Char('<'),
+                Input::Char(' '),
+                Input::Char('<'),
+                Input::Char('N'),
+                Input::Char('o'),
+                Input::Char('p'),
+                Input::Char('e'),
+                Input::Char('>'),
+            ]
+        );
+        assert_eq!(parse_rhs(":sort <CR>"), Some(Rhs::Ex("sort".into())));
+        assert_eq!(parse_rhs("dd"), Some(Rhs::Keys(vec![Input::Char('d'), Input::Char('d')])));
+        assert_eq!(parse_rhs(""), None);
+        let maps = [("<C-c>".to_string(), ":edit.copy<CR>".to_string())].into_iter().collect();
+        assert_eq!(keys_for("edit.copy", &maps).as_deref(), Some("<C-c> y"));
+        assert_eq!(keys_for("file.print", &maps), None);
+    }
+
+    #[test]
+    fn scroll_increment_unhide_and_command_line_keys() {
+        let mut vim = Vim::default();
+        assert_eq!(vim.feed(Input::Ctrl('f')), vec![Action::Move(Motion::PageDown, None)]);
+        assert_eq!(vim.feed(Input::Ctrl('b')), vec![Action::Move(Motion::PageUp, None)]);
+        assert_eq!(feed(&mut vim, "3zl"), vec![Action::ScrollCols(3)]);
+        assert_eq!(feed(&mut vim, "zh"), vec![Action::ScrollCols(-1)]);
+        feed(&mut vim, "5");
+        assert_eq!(vim.feed(Input::Ctrl('a')), vec![Action::Increment(5)]);
+        assert_eq!(vim.feed(Input::Ctrl('x')), vec![Action::Increment(-1)]);
+        assert_eq!(feed(&mut vim, "."), vec![Action::Increment(-1)]);
+        assert_eq!(feed(&mut vim, "Sr"), vec![Action::Unhide { cols: false }]);
+        assert_eq!(feed(&mut vim, "vSc"), vec![Action::Visual(Some(Visual::Cells)), Action::Unhide { cols: true }, Action::Visual(None)]);
+        assert_eq!(feed(&mut vim, ":"), vec![Action::Palette]);
+        assert_eq!(feed(&mut vim, "v:"), vec![Action::Visual(Some(Visual::Cells)), Action::Palette]);
+        assert_eq!(vim.mode(), Mode::Normal);
+    }
+
+    #[test]
+    fn bump_number_changes_the_first_number() {
+        assert_eq!(bump_number("item 9 of 12", 1).as_deref(), Some("item 10 of 12"));
+        assert_eq!(bump_number("x-3", 5).as_deref(), Some("x-8"));
+        assert_eq!(bump_number(" -3", 5).as_deref(), Some(" 2"));
+        assert_eq!(bump_number("v2", -5).as_deref(), Some("v-3"));
+        assert_eq!(bump_number("none", 1), None);
     }
 
     #[test]

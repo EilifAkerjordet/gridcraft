@@ -60,6 +60,8 @@ pub struct GridState {
     pub ensure_visible: bool,
     /// Scroll so the active row sits at this fraction of the view (0 top, 0.5 middle, 1 bottom).
     pub scroll_to: Option<f32>,
+    /// Scroll this many columns right (left when negative) without moving the cursor.
+    pub scroll_cols: Option<i32>,
     pub last_title: Option<String>,
     pub drag_select: bool,
     pub rect: Option<Rect>,
@@ -88,6 +90,8 @@ pub struct GridState {
     pub header_menu: Option<(Pos2, bool)>,
     /// First and last row on screen last frame (vim's H, M, L and half-page moves).
     pub visible_rows: Option<(u32, u32)>,
+    /// First and last scrolling column on screen last frame.
+    pub visible_cols: Option<(u32, u32)>,
 }
 
 impl GridState {
@@ -384,6 +388,13 @@ pub fn show(app: &mut SheetApp, ui: &mut egui::Ui) {
         view.scroll.y = (view.scroll.y + (cr.top() - want) / geo.z).max(0.0);
         geo = Geo::new(sh, rect, view.scroll);
     }
+    if let Some(by) = app.grid.scroll_cols.take() {
+        let (first, _) = geo.scroll_cols(sh);
+        let target = (i64::from(first) + i64::from(by)).clamp(i64::from(geo.fc), i64::from(MAX_COLS - 1)) as u32;
+        let x = geo.cell_rect(sh, CellRef::new(geo.fr, target)).left();
+        view.scroll.x = (view.scroll.x + (x - (geo.cells.left() + geo.frozen_w)) / geo.z).max(0.0);
+        geo = Geo::new(sh, rect, view.scroll);
+    }
     if app.grid.ensure_visible {
         app.grid.ensure_visible = false;
         let target = app.editor.as_ref().and_then(|e| e.point_cell).unwrap_or(sel.active);
@@ -418,6 +429,7 @@ pub fn show(app: &mut SheetApp, ui: &mut egui::Ui) {
     let (sr0, sr1) = geo.scroll_rows(sh);
     let (sc0, sc1) = geo.scroll_cols(sh);
     app.grid.visible_rows = Some((if geo.fr > 0 { 0 } else { sr0 }, sr1.saturating_sub(1).max(sr0)));
+    app.grid.visible_cols = Some((sc0, sc1.saturating_sub(1).max(sc0)));
     let fr_rows = (0, geo.fr.saturating_sub(1));
     let fr_cols = (0, geo.fc.saturating_sub(1));
     let split = pos2(geo.cells.left() + geo.frozen_w, geo.cells.top() + geo.frozen_h);
@@ -1739,7 +1751,7 @@ fn keyboard(app: &mut SheetApp, ctx: &egui::Context, resp: &egui::Response, geo:
         resp.request_focus();
     }
     let other_focus = ctx.memory(|m| m.focused()).is_some_and(|f| f != resp.id && (editing || !stale.contains(&f)));
-    if editing || app.dialog.is_some() || other_focus || app.message.is_some() {
+    if editing || app.dialog.is_some() || app.palette.is_some() || other_focus || app.message.is_some() {
         return;
     }
     if ctx.memory(|m| m.focused()).is_none() {
@@ -1826,6 +1838,7 @@ fn keyboard(app: &mut SheetApp, ctx: &egui::Context, resp: &egui::Response, geo:
                         app.session.format_painter = None;
                     }
                     Key::Space if !cmd && !shift && is_checkbox(sh, app) => app.run_or_alert("cell.toggleCheckbox", json!({})),
+                    Key::Space if cmd && shift => app.palette = Some(crate::palette::Palette::new(false)),
                     Key::Space if cmd && !shift => app.run_or_alert("selection.column", json!({})),
                     Key::Space if shift && !cmd => app.run_or_alert("selection.row", json!({})),
                     Key::F9 => app.run_or_alert("formulas.calculateNow", json!({})),

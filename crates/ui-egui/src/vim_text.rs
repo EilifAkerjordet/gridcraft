@@ -161,7 +161,7 @@ impl TextVim {
                 // Redo is the grid's job after the commit; inside a cell `u` is enough.
                 return Outcome::Continue;
             }
-            Input::Ctrl(_) => return Outcome::Continue,
+            Input::Ctrl(_) | Input::Typed(_) => return Outcome::Continue,
         };
         match self.pending.take() {
             Some(Pending::Replace) => {

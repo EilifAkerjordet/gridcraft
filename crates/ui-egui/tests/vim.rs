@@ -557,3 +557,94 @@ fn align_resize_and_hide() {
     assert!(sh(&h).is_col_hidden(1));
     assert!(!sh(&h).is_col_hidden(0));
 }
+
+#[test]
+fn named_registers_keep_their_own_yanks() {
+    let mut h = harness(rows(), true);
+    typed(&mut h, "\"ayyjyy");
+    typed(&mut h, "G\"ap");
+    assert_eq!(text(&h, "A6"), "r1", "\"ap puts register a, not the last yank");
+    typed(&mut h, "p");
+    assert_eq!(text(&h, "A7"), "r2", "plain p puts the last yank");
+    typed(&mut h, "\"zp");
+    assert_eq!(text(&h, "A8"), "", "an empty register puts nothing");
+}
+
+#[test]
+fn macros_replay_keys_and_edits() {
+    let mut h = harness(rows(), true);
+    typed(&mut h, "qaxjq");
+    assert_eq!(text(&h, "A1"), "");
+    assert_eq!(active(&h), "A2");
+    typed(&mut h, "2@a");
+    assert_eq!(text(&h, "A2"), "");
+    assert_eq!(text(&h, "A3"), "");
+    assert_eq!(active(&h), "A4");
+    typed(&mut h, "qbcc");
+    typed(&mut h, "new");
+    save(&mut h);
+    typed(&mut h, "jq");
+    assert_eq!(text(&h, "A4"), "new");
+    typed(&mut h, "@b");
+    assert_eq!(text(&h, "A5"), "new", "the macro writes the text typed while recording");
+    assert!(h.state().editor.is_none());
+    typed(&mut h, "@@");
+    assert_eq!(text(&h, "A6"), "new");
+}
+
+#[test]
+fn ctrl_a_and_ctrl_x_change_numbers() {
+    let mut h = harness(rows(), true);
+    typed(&mut h, "l");
+    press(&mut h, Key::A, Modifiers::CTRL);
+    assert_eq!(text(&h, "B1"), "11");
+    typed(&mut h, "5");
+    press(&mut h, Key::X, Modifiers::CTRL);
+    assert_eq!(text(&h, "B1"), "6");
+    typed(&mut h, "h");
+    press(&mut h, Key::A, Modifiers::CTRL);
+    assert_eq!(text(&h, "A1"), "r2", "in text the first number changes");
+    typed(&mut h, "j.");
+    assert_eq!(text(&h, "A2"), "r3", ". repeats it");
+}
+
+#[test]
+fn capital_s_unhides_next_to_the_cursor() {
+    let mut h = harness(rows(), true);
+    typed(&mut h, "jZr");
+    let hidden = |h: &Harness, r: u32| h.state().session.active().unwrap().wb.active().unwrap().is_row_hidden(r);
+    assert!(hidden(&h, 1));
+    typed(&mut h, "ggSr");
+    assert!(!hidden(&h, 1));
+    typed(&mut h, "Sr");
+    assert!(h.state().toast.is_some(), "nothing hidden: a toast, no change");
+}
+
+#[test]
+fn question_mark_searches_backward() {
+    let mut h = harness(rows(), true);
+    typed(&mut h, "3G?r");
+    press(&mut h, Key::Enter, Modifiers::NONE);
+    assert_eq!(active(&h), "A2");
+    typed(&mut h, "n");
+    assert_eq!(active(&h), "A1");
+    typed(&mut h, "N");
+    assert_eq!(active(&h), "A2");
+}
+
+#[test]
+fn page_and_column_scrolling() {
+    let mut h = harness(rows(), true);
+    let (top, bottom) = h.state().grid.visible_rows.unwrap();
+    press(&mut h, Key::F, Modifiers::CTRL);
+    let row = h.state().session.active().unwrap().selection.active.row;
+    assert_eq!(row, bottom - top);
+    assert_eq!(h.state().grid.visible_rows.unwrap().0, row, "Ctrl-f starts the page at the cursor");
+    press(&mut h, Key::B, Modifiers::CTRL);
+    assert_eq!(active(&h), "A1");
+    typed(&mut h, "3zl");
+    assert_eq!(h.state().grid.visible_cols.unwrap().0, 3);
+    assert_eq!(active(&h), "A1", "zl scrolls without moving the cursor");
+    typed(&mut h, "zh");
+    assert_eq!(h.state().grid.visible_cols.unwrap().0, 2);
+}
