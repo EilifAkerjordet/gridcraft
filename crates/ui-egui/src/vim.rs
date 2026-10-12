@@ -905,10 +905,24 @@ fn printable(key: Key) -> bool {
 pub fn take_inputs(ctx: &Context) -> Vec<Input> {
     let mac = ctx.os() == OperatingSystem::Mac;
     let mut inputs = Vec::new();
+    // macOS sends Shift+. as Key and Text in one frame; one sheet step per press.
+    let mut sheet_angle = [false, false];
+    let mut push_char = |out: &mut Vec<Input>, c: char| {
+        if c == '<' || c == '>' {
+            let i = (c == '>') as usize;
+            if sheet_angle[i] {
+                return;
+            }
+            sheet_angle[i] = true;
+        }
+        out.push(Input::Char(c));
+    };
     ctx.input_mut(|i| {
         i.events.retain(|event| match event {
             Event::Text(text) => {
-                inputs.extend(text.chars().filter(|c| !c.is_control()).map(Input::Char));
+                for c in text.chars().filter(|c| !c.is_control()) {
+                    push_char(&mut inputs, c);
+                }
                 false
             }
             Event::Key { key, pressed, modifiers: m, .. } => {
@@ -942,7 +956,7 @@ pub fn take_inputs(ctx: &Context) -> Vec<Input> {
                         _ => None,
                     }
                 {
-                    inputs.push(Input::Char(c));
+                    push_char(&mut inputs, c);
                     return false;
                 }
                 let named = match key {
@@ -2168,5 +2182,18 @@ mod tests {
             remaining,
             vec![key(Key::ArrowDown, egui::Modifiers::NONE), key(Key::C, egui::Modifiers::COMMAND), key(Key::Tab, egui::Modifiers::NONE)]
         );
+    }
+
+    #[test]
+    fn take_inputs_dedupes_angle_brackets_from_key_and_text() {
+        let ctx = Context::default();
+        let key = |key: Key, modifiers: egui::Modifiers| Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers };
+        let events = vec![key(Key::Period, egui::Modifiers::SHIFT), Event::Text(">".into())];
+        let mut inputs = Vec::new();
+        let mut output = ctx.run_ui(egui::RawInput { events, ..Default::default() }, |ui| {
+            inputs = take_inputs(ui.ctx());
+        });
+        output.textures_delta.clear();
+        assert_eq!(inputs, vec![Input::Char('>')]);
     }
 }
