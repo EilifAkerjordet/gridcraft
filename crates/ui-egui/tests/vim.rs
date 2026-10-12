@@ -40,7 +40,12 @@ fn key_event(key: Key, pressed: bool, modifiers: Modifiers) -> Event {
 }
 
 fn press(h: &mut Harness, key: Key, modifiers: Modifiers) {
-    h.input_mut().events.extend([key_event(key, true, modifiers), key_event(key, false, modifiers)]);
+    h.input_mut().events.extend([
+        Event::ModifiersChanged(modifiers),
+        key_event(key, true, modifiers),
+        key_event(key, false, modifiers),
+        Event::ModifiersChanged(Modifiers::NONE),
+    ]);
     h.run_steps(2);
 }
 
@@ -354,7 +359,7 @@ fn huge_counts_neither_crash_nor_hang() {
     assert_eq!(text(&h, "A2"), "");
     typed(&mut h, "u");
     assert_eq!(text(&h, "A2"), "r2");
-    typed(&mut h, "99999<<9999.");
+    typed(&mut h, "99999<9999>");
     assert!(h.state().editor.is_none());
 }
 

@@ -20,11 +20,18 @@ pub struct Palette {
     pub vim: bool,
     focused: bool,
     last_query: String,
+    /// The query was set by code: put the caret at its end.
+    caret_to_end: bool,
 }
 
 impl Palette {
     pub fn new(vim: bool) -> Palette {
         Palette { vim, ..Palette::default() }
+    }
+
+    /// The command line for `id`, waiting for its parameters.
+    pub fn asking(vim: bool, id: &str) -> Palette {
+        Palette { vim, query: format!(":{id} "), caret_to_end: true, ..Palette::default() }
     }
 }
 
@@ -55,10 +62,11 @@ pub enum Ex {
     },
     Unmap(String),
     ListMaps,
-    /// `:home.bold {"range": "A1"}`.
+    /// `:home.fontSize 14`, `:home.borders preset=all style=thick` or
+    /// `:home.bold {"range": "A1"}`; see [`command_params`].
     Command {
         id: String,
-        params: Json,
+        args: String,
     },
 }
 
@@ -104,10 +112,7 @@ pub fn parse_ex(text: &str) -> Option<Ex> {
         _ if rest.is_empty() && (CellRef::parse(&word.to_ascii_uppercase()).is_some() || RangeRef::parse(&word.to_ascii_uppercase()).is_some()) => {
             Ex::Goto(word.to_ascii_uppercase())
         }
-        _ if is_command_id(word) => {
-            let params = if rest.is_empty() { json!({}) } else { serde_json::from_str(rest).ok().filter(Json::is_object)? };
-            Ex::Command { id: word.to_string(), params }
-        }
+        _ if is_command_id(word) => Ex::Command { id: word.to_string(), args: rest.to_string() },
         _ => return None,
     };
     Some(ex)
@@ -140,13 +145,8 @@ pub fn describe(ex: &Ex) -> String {
         Ex::Map { lhs, rhs } => format!("Map {lhs} to {rhs} in vim mode"),
         Ex::Unmap(lhs) => format!("Remove the mapping of {lhs}"),
         Ex::ListMaps => "List vim key mappings".into(),
-        Ex::Command { id, params } => {
-            if params.as_object().is_some_and(|o| o.is_empty()) {
-                format!("Run {id}")
-            } else {
-                format!("Run {id} {params}")
-            }
-        }
+        Ex::Command { id, args } if args.is_empty() => format!("Run {id}"),
+        Ex::Command { id, args } => format!("Run {id} {args}"),
     }
 }
 
@@ -203,12 +203,188 @@ pub fn run_ex(app: &mut SheetApp, ex: Ex) {
             };
             app.message = Some(("Vim key mappings".into(), list));
         }
-        Ex::Command { id, params } => {
-            remember(app, &id);
-            app.run_or_alert(&id, params);
-            app.grid.ensure_visible = true;
+        Ex::Command { id, args } => {
+            let required = app.session.commands().into_iter().find(|c| c.id == id).map(|c| required_params(c.params)).unwrap_or_default();
+            match command_params(&required, &args) {
+                Ok(params) => {
+                    remember(app, &id);
+                    try_run(app, &id, params);
+                }
+                Err(e) => app.toast = Some((e, crate::now_ms())),
+            }
         }
     }
+}
+
+/// Runs a command from the palette. When the engine says a parameter is missing, the palette
+/// comes back as that command's line, so the value can be typed (`:home.fontSize 14`).
+fn try_run(app: &mut SheetApp, id: &str, params: Json) {
+    match app.run(id, params) {
+        Ok(_) => app.grid.ensure_visible = true,
+        Err(e) if is_missing_parameter(&e) => {
+            app.palette = Some(Palette::asking(app.ui.vim_mode, id));
+            app.toast = Some((crate::clean_error(&e), crate::now_ms()));
+        }
+        // "No chart on this sheet" and the like: a toast, the palette is a quick place to try things.
+        Err(e) => app.toast = Some((crate::clean_error(&e), crate::now_ms())),
+    }
+}
+
+/// The engine's wording for a parameter a command needs and did not get.
+pub fn is_missing_parameter(error: &str) -> bool {
+    error.contains("missing `") || error.contains("missing or invalid `")
+}
+
+/// The top-level fields of the first `{…}` in a command's parameter description.
+fn param_fields(params: &str) -> Vec<String> {
+    let Some(start) = params.find('{') else { return Vec::new() };
+    let (mut depth, mut quote) = (0usize, false);
+    let (mut field, mut fields) = (String::new(), Vec::new());
+    for c in params[start..].chars() {
+        if quote {
+            quote = c != '"';
+            field.push(c);
+            continue;
+        }
+        match c {
+            '"' => {
+                quote = true;
+                field.push(c);
+            }
+            '{' | '[' | '(' => {
+                depth += 1;
+                if depth > 1 {
+                    field.push(c);
+                }
+            }
+            '}' | ']' | ')' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    fields.push(std::mem::take(&mut field));
+                    break;
+                }
+                field.push(c);
+            }
+            ',' if depth == 1 => fields.push(std::mem::take(&mut field)),
+            _ => field.push(c),
+        }
+    }
+    fields.into_iter().map(|f| f.trim().to_string()).filter(|f| !f.is_empty()).collect()
+}
+
+fn field_name(field: &str) -> Option<&str> {
+    let name = field.split(':').next()?.trim();
+    (!name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')).then_some(name)
+}
+
+/// The parameters a command needs, from its description: `{range?, size: 11}` needs `size`.
+pub fn required_params(params: &str) -> Vec<String> {
+    param_fields(params).iter().filter_map(|f| field_name(f)).map(str::to_string).collect()
+}
+
+/// The values a description lists for a parameter: `format: "General"|"Number"` or
+/// `kind: blanks|constants`. Empty for a free value such as `size: 11`.
+pub fn choices(params: &str, name: &str) -> Vec<String> {
+    let fields = param_fields(params);
+    let Some(field) = fields.iter().find(|f| field_name(f) == Some(name)) else { return Vec::new() };
+    let Some((_, values)) = field.split_once(':') else { return Vec::new() };
+    let found: Vec<String> = values
+        .split('|')
+        .filter_map(|v| {
+            let v = v.trim();
+            if let Some(q) = v.strip_prefix('"').and_then(|v| v.strip_suffix('"')) {
+                return (!q.contains('"')).then(|| q.to_string());
+            }
+            (!v.is_empty() && !v.contains("..") && v.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')).then(|| v.to_string())
+        })
+        .collect();
+    if found.len() >= 2 { found } else { Vec::new() }
+}
+
+/// Parameters typed after a command: a JSON object, `name=value` pairs, or bare values for the
+/// required parameters in order. With one required parameter the whole line is its value, so
+/// `:home.fontName Times New Roman` works.
+pub fn command_params(required: &[String], args: &str) -> Result<Json, String> {
+    let args = args.trim();
+    if args.is_empty() {
+        return Ok(json!({}));
+    }
+    if args.starts_with('{') {
+        return serde_json::from_str::<Json>(args)
+            .ok()
+            .filter(Json::is_object)
+            .ok_or_else(|| "Parameters in braces must be a JSON object".to_string());
+    }
+    let tokens = split_args(args);
+    let mut map = serde_json::Map::new();
+    if let [only] = required
+        && !tokens.iter().any(|t| t.contains('='))
+    {
+        map.insert(only.clone(), arg_value(args));
+        return Ok(Json::Object(map));
+    }
+    for t in &tokens {
+        if let Some((k, v)) = t.split_once('=') {
+            map.insert(k.trim().to_string(), arg_value(v));
+        }
+    }
+    let mut free = required.iter();
+    for t in tokens.iter().filter(|t| !t.contains('=')) {
+        let Some(key) = free.find(|k| !map.contains_key(*k)) else {
+            return Err(format!("Not sure which parameter {t} is: write name={t}"));
+        };
+        map.insert(key.clone(), arg_value(t));
+    }
+    Ok(Json::Object(map))
+}
+
+/// Splits on spaces outside double quotes.
+fn split_args(args: &str) -> Vec<String> {
+    let (mut out, mut cur, mut quote) = (Vec::new(), String::new(), false);
+    for c in args.chars() {
+        match c {
+            '"' => {
+                quote = !quote;
+                cur.push(c);
+            }
+            c if c.is_whitespace() && !quote => {
+                if !cur.is_empty() {
+                    out.push(std::mem::take(&mut cur));
+                }
+            }
+            c => cur.push(c),
+        }
+    }
+    if !cur.is_empty() {
+        out.push(cur);
+    }
+    out
+}
+
+fn arg_value(v: &str) -> Json {
+    let v = v.trim();
+    if let Some(q) = v.strip_prefix('"').and_then(|v| v.strip_suffix('"')) {
+        return json!(q);
+    }
+    match v {
+        "true" => return json!(true),
+        "false" => return json!(false),
+        _ => {}
+    }
+    if let Ok(n) = v.parse::<i64>() {
+        return json!(n);
+    }
+    if let Ok(n) = v.parse::<f64>()
+        && n.is_finite()
+    {
+        return json!(n);
+    }
+    if v.starts_with('[')
+        && let Ok(j) = serde_json::from_str::<Json>(v)
+    {
+        return j;
+    }
+    json!(v)
 }
 
 fn expand_home(path: &str) -> String {
@@ -293,37 +469,41 @@ pub fn shortcut_label(shortcut: &str, mac: bool) -> String {
         .collect()
 }
 
-/// Commands whose settings live in a dialog: the palette opens the dialog instead.
-const DIALOGS: &[(&str, &str)] = &[
-    ("data.removeDuplicates", "removeDuplicates"),
-    ("data.subtotal", "subtotal"),
-    ("data.textToColumns", "textToColumns"),
-    ("data.validation", "dataValidation"),
-    ("data.sort", "sort"),
-    ("data.goalSeek", "goalSeek"),
-    ("edit.fillSeries", "series"),
-    ("edit.goTo", "goTo"),
-    ("edit.goToSpecial", "goToSpecial"),
-    ("edit.pasteSpecial", "pasteSpecial"),
-    ("edit.find", "find"),
-    ("formulas.insertFunction", "insertFunction"),
-    ("home.columnWidth", "columnWidth"),
-    ("home.defaultWidth", "defaultWidth"),
-    ("home.deleteCells", "deleteCells"),
-    ("home.insertCells", "insertCells"),
-    ("home.formatCells", "formatCells"),
-    ("home.manageRules", "manageRules"),
-    ("home.rowHeight", "rowHeight"),
-    ("insert.link", "insertLink"),
-    ("insert.sparkline", "sparkline"),
-    ("pageLayout.headerFooter", "headerFooter"),
-    ("pageLayout.margins", "pageSetup"),
-    ("review.protectSheet", "protectSheet"),
-    ("review.unprotectSheet", "unprotectSheet"),
-    ("sheet.move", "moveSheet"),
-    ("sheet.rename", "renameSheet"),
-    ("sheet.unhide", "unhideSheet"),
-    ("view.zoom", "zoom"),
+/// Commands whose settings live in a dialog: the palette opens the dialog (with these JSON
+/// parameters) instead of running the command.
+pub const DIALOGS: &[(&str, &str, &str)] = &[
+    ("data.removeDuplicates", "removeDuplicates", "{}"),
+    ("data.subtotal", "subtotal", "{}"),
+    ("data.textToColumns", "textToColumns", "{}"),
+    ("data.validation", "dataValidation", "{}"),
+    ("data.sort", "sort", "{}"),
+    ("data.goalSeek", "goalSeek", "{}"),
+    ("edit.fillSeries", "series", "{}"),
+    ("edit.goTo", "goTo", "{}"),
+    ("edit.goToSpecial", "goToSpecial", "{}"),
+    ("edit.pasteSpecial", "pasteSpecial", "{}"),
+    ("edit.find", "find", "{}"),
+    ("edit.replace", "find", r#"{"replace": true}"#),
+    ("file.exportCsv", "saveCopy", r#"{"format": "csv"}"#),
+    ("file.exportHtml", "saveCopy", r#"{"format": "html"}"#),
+    ("formulas.insertFunction", "insertFunction", "{}"),
+    ("home.columnWidth", "columnWidth", "{}"),
+    ("home.defaultWidth", "defaultWidth", "{}"),
+    ("home.deleteCells", "deleteCells", "{}"),
+    ("home.insertCells", "insertCells", "{}"),
+    ("home.formatCells", "formatCells", "{}"),
+    ("home.manageRules", "manageRules", "{}"),
+    ("home.rowHeight", "rowHeight", "{}"),
+    ("insert.link", "insertLink", "{}"),
+    ("insert.sparkline", "sparkline", "{}"),
+    ("pageLayout.headerFooter", "headerFooter", "{}"),
+    ("pageLayout.margins", "pageSetup", "{}"),
+    ("review.protectSheet", "protectSheet", "{}"),
+    ("review.unprotectSheet", "unprotectSheet", "{}"),
+    ("sheet.move", "moveSheet", "{}"),
+    ("sheet.rename", "renameSheet", "{}"),
+    ("sheet.unhide", "unhideSheet", "{}"),
+    ("view.zoom", "zoom", "{}"),
 ];
 
 /// One command row.
@@ -339,8 +519,18 @@ pub struct Entry {
 /// A palette row: a command line, or a command.
 #[derive(Clone, Debug)]
 pub enum Row {
-    Ex(Ex),
+    Ex {
+        ex: Ex,
+        label: String,
+        path: String,
+    },
     Command(Entry),
+    /// A value for a command's parameter, from its description.
+    Choice {
+        id: &'static str,
+        name: String,
+        value: String,
+    },
 }
 
 /// The rows for `query`: a command line first when it parses as one (in vim mode, or after a
@@ -348,6 +538,12 @@ pub enum Row {
 pub fn rows(app: &SheetApp, query: &str, vim: bool, mac: bool) -> Vec<Row> {
     let colon = query.trim_start().starts_with(':');
     let query = query.trim().trim_start_matches(':').trim();
+    let ex = parse_ex(query).filter(|_| vim || colon);
+    if let Some(Ex::Command { id, args }) = &ex
+        && let Some(c) = app.session.commands().into_iter().find(|c| c.id == id)
+    {
+        return command_rows(app, &c, args);
+    }
     let lang = app.ui.language;
     let mut entries: Vec<(i32, usize, Entry)> = Vec::new();
     for (order, c) in app.session.commands().into_iter().enumerate() {
@@ -369,8 +565,33 @@ pub fn rows(app: &SheetApp, query: &str, vim: bool, mac: bool) -> Vec<Row> {
         entries.push((score, order, Entry { id: c.id, label, path, shortcut, keys }));
     }
     entries.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
-    let mut rows: Vec<Row> = parse_ex(query).filter(|_| vim || colon).into_iter().map(Row::Ex).collect();
+    let mut rows: Vec<Row> = ex.into_iter().map(|ex| Row::Ex { label: describe(&ex), path: "Command line".into(), ex }).collect();
     rows.extend(entries.into_iter().take(200).map(|(.., e)| Row::Command(e)));
+    rows
+}
+
+/// The rows for a typed command line `:id args`: values to pick for its first required
+/// parameter, then the line itself with the command's parameter description.
+fn command_rows(app: &SheetApp, c: &gridcraft_engine::CommandInfo, args: &str) -> Vec<Row> {
+    let label = app.ui.language.tr(c.label).trim_end_matches('…').to_string();
+    let required = required_params(c.params);
+    let mut rows = Vec::new();
+    let typed = args.trim().trim_matches('"');
+    if !args.contains('=')
+        && !args.trim_start().starts_with('{')
+        && let Some(name) = required.first()
+    {
+        let values = choices(c.params, name);
+        if !values.iter().any(|v| v.eq_ignore_ascii_case(typed)) {
+            let mut scored: Vec<(i32, usize, String)> =
+                values.into_iter().enumerate().filter_map(|(i, v)| fuzzy(typed, &v).map(|s| (s, i, v))).collect();
+            scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+            rows.extend(scored.into_iter().map(|(.., value)| Row::Choice { id: c.id, name: name.clone(), value }));
+        }
+    }
+    let line = if args.trim().is_empty() { label } else { format!("{label}: {}", args.trim()) };
+    let ex = Ex::Command { id: c.id.to_string(), args: args.trim().to_string() };
+    rows.push(Row::Ex { ex, label: line, path: c.params.to_string() });
     rows
 }
 
@@ -383,15 +604,14 @@ fn remember(app: &mut SheetApp, id: &str) {
 /// Runs a picked command: its dialog when it has one, otherwise the command on the selection.
 pub fn run_command(app: &mut SheetApp, id: &str) {
     remember(app, id);
-    if let Some((_, dialog)) = DIALOGS.iter().find(|(c, _)| *c == id) {
-        app.open_dialog(dialog, json!({}));
+    if let Some((_, dialog, params)) = DIALOGS.iter().find(|(c, ..)| *c == id) {
+        app.open_dialog(dialog, serde_json::from_str(params).unwrap_or_else(|_| json!({})));
         return;
     }
     if id.starts_with("file.") && !app.commit_edit(0, 0, false, false) {
         return;
     }
-    app.run_or_alert(id, json!({}));
-    app.grid.ensure_visible = true;
+    try_run(app, id, json!({}));
 }
 
 const ROW_H: f32 = 28.0;
@@ -450,6 +670,16 @@ pub fn show(app: &mut SheetApp, ctx: &Context) {
                     r.request_focus();
                     p.focused = true;
                 }
+                if std::mem::take(&mut p.caret_to_end) {
+                    let id = egui::Id::new("gridcraft.palette.input");
+                    if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), id) {
+                        let end = egui::text::CCursor::new(p.query.chars().count());
+                        state.cursor.set_char_range(Some(egui::text::CCursorRange::one(end)));
+                        state.store(ui.ctx(), id);
+                    } else {
+                        p.caret_to_end = true;
+                    }
+                }
             });
             ui.separator();
             if rows.is_empty() {
@@ -477,8 +707,9 @@ pub fn show(app: &mut SheetApp, ctx: &Context) {
     }
     if let Some(i) = pick {
         match rows.into_iter().nth(i) {
-            Some(Row::Ex(ex)) => run_ex(app, ex),
+            Some(Row::Ex { ex, .. }) => run_ex(app, ex),
             Some(Row::Command(e)) => run_command(app, e.id),
+            Some(Row::Choice { id, name, value }) => run_ex(app, Ex::Command { id: id.to_string(), args: format!("{name}=\"{value}\"") }),
             None if !p.query.trim().is_empty() => {
                 app.toast = Some((format!("Not a command: {}", p.query.trim()), crate::now_ms()));
             }
@@ -499,7 +730,8 @@ fn paint_row(ui: &egui::Ui, rect: Rect, row: &Row, highlight: bool, t: &Tokens) 
     let font = theme::ui_font(13.5);
     let small = theme::ui_font(11.5);
     let (label, path, badges): (String, String, Vec<String>) = match row {
-        Row::Ex(ex) => (describe(ex), "Command line".into(), vec!["⏎".into()]),
+        Row::Ex { label, path, .. } => (label.clone(), path.clone(), vec!["⏎".into()]),
+        Row::Choice { name, value, .. } => (value.clone(), name.clone(), Vec::new()),
         Row::Command(e) => (e.label.clone(), e.path.clone(), e.keys.iter().chain(e.shortcut.iter()).cloned().collect()),
     };
     let g = painter.layout_no_wrap(label, font, t.text);
@@ -574,12 +806,44 @@ mod tests {
         assert_eq!(parse_ex("map Q"), None);
         assert_eq!(parse_ex("map"), Some(Ex::ListMaps));
         assert_eq!(parse_ex("unmap Q"), Some(Ex::Unmap("Q".into())));
-        assert_eq!(parse_ex("home.bold"), Some(Ex::Command { id: "home.bold".into(), params: json!({}) }));
-        assert_eq!(parse_ex(r#"home.bold {"range": "A1"}"#), Some(Ex::Command { id: "home.bold".into(), params: json!({"range": "A1"}) }));
-        assert_eq!(parse_ex("home.bold {nope"), None);
+        assert_eq!(parse_ex("home.bold"), Some(Ex::Command { id: "home.bold".into(), args: String::new() }));
+        assert_eq!(parse_ex(r#"home.bold {"range": "A1"}"#), Some(Ex::Command { id: "home.bold".into(), args: r#"{"range": "A1"}"#.into() }));
         assert_eq!(parse_ex("bold"), None);
         assert_eq!(parse_ex("freeze panes"), None);
         assert_eq!(parse_ex(""), None);
         assert_eq!(parse_ex("   "), None);
+    }
+
+    #[test]
+    fn parameter_descriptions() {
+        assert_eq!(required_params("{range?, size: 11}"), vec!["size"]);
+        assert_eq!(required_params(r#"{path} | {name, base64} (xlsx)"#), vec!["path"]);
+        assert_eq!(required_params("{cell?, formula?} → steps"), Vec::<String>::new());
+        assert_eq!(required_params("{}"), Vec::<String>::new());
+        assert_eq!(required_params(r#"{range: "B2:M2", location: "N2", type?: line|column}"#), vec!["range", "location"]);
+        assert_eq!(required_params(r##"{range?, color: "#C00000" | "auto" | {theme: 4, tint: -0.25}}"##), vec!["color"]);
+        let fmt = r#"{range?, format: "General"|"Number"|"Short Date" | code: "0.00"}"#;
+        assert_eq!(choices(fmt, "format"), vec!["General", "Number", "Short Date"]);
+        assert_eq!(choices("{kind: blanks|constants|lastCell}", "kind"), vec!["blanks", "constants", "lastCell"]);
+        assert!(choices("{range?, size: 11}", "size").is_empty());
+        assert!(choices("{angle: -90..90 | 0}", "angle").is_empty());
+    }
+
+    #[test]
+    fn typed_parameters() {
+        let one = vec!["name".to_string()];
+        assert_eq!(command_params(&one, "Times New Roman"), Ok(json!({"name": "Times New Roman"})));
+        assert_eq!(command_params(&["size".to_string()], "14"), Ok(json!({"size": 14})));
+        assert_eq!(command_params(&["size".to_string()], "10.5"), Ok(json!({"size": 10.5})));
+        let two = vec!["range".to_string(), "location".to_string()];
+        assert_eq!(command_params(&two, "B2:M2 N2"), Ok(json!({"range": "B2:M2", "location": "N2"})));
+        assert_eq!(command_params(&two, r#"location=N2 B2:M2 markers=true"#), Ok(json!({"range": "B2:M2", "location": "N2", "markers": true})));
+        assert_eq!(command_params(&[], r#"preset=all style="thick""#), Ok(json!({"preset": "all", "style": "thick"})));
+        assert_eq!(command_params(&[], r#"{"range": "A1"}"#), Ok(json!({"range": "A1"})));
+        assert!(command_params(&[], "{nope").is_err());
+        assert!(command_params(&[], "stray").is_err());
+        assert_eq!(command_params(&one, ""), Ok(json!({})));
+        assert!(is_missing_parameter("invalid parameters for `home.fontSize`: missing `size`"));
+        assert!(!is_missing_parameter("No cells were found."));
     }
 }

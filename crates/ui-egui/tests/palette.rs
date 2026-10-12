@@ -177,6 +177,33 @@ fn arrows_choose_the_row() {
 }
 
 #[test]
+fn missing_parameters_reopen_the_command_line() {
+    let mut h = harness(true);
+    typed(&mut h, ":home.fontSize");
+    enter(&mut h);
+    assert!(h.state().palette.is_some(), "palette stays open for the value");
+    assert!(h.state().palette.as_ref().unwrap().query.contains("home.fontSize"));
+    typed(&mut h, " 14");
+    enter(&mut h);
+    assert!(h.state().palette.is_none());
+}
+
+#[test]
+fn number_format_shows_choices_while_typing() {
+    let mut h = harness(true);
+    typed(&mut h, ":home.numberFormat Per");
+    let rows = gridcraft_ui_egui::palette::rows(h.state(), "home.numberFormat Per", true, true);
+    assert!(rows.iter().any(|r| matches!(r, gridcraft_ui_egui::palette::Row::Choice { value, .. } if value == "Percentage")));
+}
+
+#[test]
+fn export_csv_opens_save_copy_dialog() {
+    let mut h = harness(false);
+    gridcraft_ui_egui::palette::run_command(h.state_mut(), "file.exportCsv");
+    assert!(h.state().dialog.is_some());
+}
+
+#[test]
 fn commands_with_settings_open_their_dialog() {
     let mut h = harness(false);
     gridcraft_ui_egui::palette::run_command(h.state_mut(), "home.columnWidth");

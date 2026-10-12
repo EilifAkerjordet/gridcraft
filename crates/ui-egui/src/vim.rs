@@ -132,7 +132,6 @@ pub enum Action {
         count: u32,
     },
     PasteSpecial(Paste),
-    Indent(i32),
     Undo(u32),
     Redo(u32),
     /// The new visual state; `None` leaves visual mode.
@@ -194,8 +193,6 @@ enum Pending {
     Delete,
     Yank,
     Change,
-    Indent,
-    Outdent,
     /// `+`: insert a row or column.
     Plus,
     /// `P`: a typed paste key may follow.
@@ -303,8 +300,6 @@ impl Vim {
             Some(Pending::Delete) => "d",
             Some(Pending::Yank) => "y",
             Some(Pending::Change) => "c",
-            Some(Pending::Indent) => ">",
-            Some(Pending::Outdent) => "<",
             Some(Pending::Plus) => "+",
             Some(Pending::Paste) => "P",
             Some(Pending::Mark) => "m",
@@ -638,8 +633,6 @@ impl Vim {
             (Pending::Yank, 'y' | 'r') => (Action::YankRows(n), Done::Other),
             (Pending::Yank, 'c') => (Action::YankCols(n), Done::Other),
             (Pending::Change, 'c') => (Action::Edit(Edit::Substitute, self.repeat_text()), Done::Change),
-            (Pending::Indent, '>') => (Action::Indent(by), Done::Change),
-            (Pending::Outdent, '<') => (Action::Indent(-by), Done::Change),
             (Pending::Plus, 'r' | 'c') => (Action::InsertLines { cols: c == 'c', count: n }, Done::Change),
             (Pending::Paste, 'v') => (Action::PasteSpecial(Paste::Values), Done::Change),
             (Pending::Paste, 'f') => (Action::PasteSpecial(Paste::Formats), Done::Change),
@@ -722,14 +715,20 @@ impl Vim {
                 self.repeat(count, out);
                 return Done::Other;
             }
-            Input::Char(c @ ('d' | 'y' | 'c' | '>' | '<' | '+' | 'P')) => {
+            Input::Char('>') => {
+                out.push(Action::SheetNext(self.take_count()));
+                return Done::Other;
+            }
+            Input::Char('<') => {
+                out.push(Action::SheetPrevious(self.take_count()));
+                return Done::Other;
+            }
+            Input::Char(c @ ('d' | 'y' | 'c' | '+' | 'P')) => {
                 // The count stays for the second key.
                 self.pending = Some(match c {
                     'd' => Pending::Delete,
                     'y' => Pending::Yank,
                     'c' => Pending::Change,
-                    '>' => Pending::Indent,
-                    '<' => Pending::Outdent,
                     '+' => Pending::Plus,
                     _ => Pending::Paste,
                 });
@@ -934,6 +933,18 @@ pub fn take_inputs(ctx: &Context) -> Vec<Input> {
                 if m.ctrl || m.command || m.mac_cmd || m.alt {
                     return true;
                 }
+                // Sheet keys `<` `>` are usually Shift+, and Shift+. ; some platforms skip Event::Text.
+                if m.shift
+                    && *pressed
+                    && let Some(c) = match key {
+                        Key::Period => Some('>'),
+                        Key::Comma => Some('<'),
+                        _ => None,
+                    }
+                {
+                    inputs.push(Input::Char(c));
+                    return false;
+                }
                 let named = match key {
                     Key::Escape => Some(Input::Esc),
                     Key::Enter => Some(Input::Enter),
@@ -1111,12 +1122,6 @@ fn act(app: &mut SheetApp, ctx: &Context, action: Action) {
         }
         Action::Put { before, count } => put(app, before, count),
         Action::PasteSpecial(kind) => paste_special(app, kind),
-        Action::Indent(by) => {
-            let id = if by > 0 { "home.increaseIndent" } else { "home.decreaseIndent" };
-            for _ in 0..by.unsigned_abs().min(15) {
-                app.run_or_alert(id, json!({}));
-            }
-        }
         Action::Undo(count) => repeat_command(app, "edit.undo", count),
         Action::Redo(count) => repeat_command(app, "edit.redo", count),
         Action::Visual(Some(kind)) => {
@@ -1532,45 +1537,48 @@ pub(crate) fn jump_to(app: &mut SheetApp, cell: CellRef) {
     app.grid.ensure_visible = true;
 }
 
+/// The vim keys shown next to commands in the palette. `tests/fork_drift.rs` checks that every
+/// id is still an engine command.
+pub const VIM_KEYS: &[(&str, &str)] = &[
+    ("edit.undo", "u"),
+    ("edit.redo", "Ctrl-r"),
+    ("edit.copy", "y"),
+    ("edit.paste", "p"),
+    ("edit.pasteSpecial", "Pv Pf Pc Pt"),
+    ("edit.clearContents", "x"),
+    ("edit.find", "/ ?"),
+    ("edit.goTo", "go"),
+    ("home.alignLeft", "{"),
+    ("home.alignCenter", "|"),
+    ("home.alignRight", "}"),
+    ("home.increaseIndent", "v>"),
+    ("home.decreaseIndent", "v<"),
+    ("home.insertRows", "+r"),
+    ("home.insertColumns", "+c"),
+    ("home.deleteRows", "dr"),
+    ("home.deleteColumns", "dc"),
+    ("home.hideRows", "Zr"),
+    ("home.hideColumns", "Zc"),
+    ("home.unhideRows", "Sr"),
+    ("home.unhideColumns", "Sc"),
+    ("home.columnWidth", "fh fl"),
+    ("home.rowHeight", "fk fj"),
+    ("sheet.next", "> gt"),
+    ("sheet.previous", "< gT"),
+    ("file.save", ":w"),
+    ("file.close", ":q"),
+    ("file.open", ":e"),
+    ("data.sortAscending", ":sort"),
+    ("data.sortDescending", ":sort!"),
+    ("edit.fillDown", ":fill"),
+    ("edit.fillRight", ":fill right"),
+    ("view.freezePanes", ":freeze"),
+    ("view.unfreezePanes", ":unfreeze"),
+];
+
 /// The vim keys for a command, for the palette: built in, and mappings to `:<command><CR>`.
 pub fn keys_for(id: &str, maps: &std::collections::BTreeMap<String, String>) -> Option<String> {
-    let builtin = match id {
-        "edit.undo" => "u",
-        "edit.redo" => "Ctrl-r",
-        "edit.copy" => "y",
-        "edit.paste" => "p",
-        "edit.pasteSpecial" => "Pv Pf Pc Pt",
-        "edit.clearContents" => "x",
-        "edit.find" => "/ ?",
-        "edit.goTo" => "go",
-        "home.alignLeft" => "{",
-        "home.alignCenter" => "|",
-        "home.alignRight" => "}",
-        "home.increaseIndent" => ">>",
-        "home.decreaseIndent" => "<<",
-        "home.insertRows" => "+r",
-        "home.insertColumns" => "+c",
-        "home.deleteRows" => "dr",
-        "home.deleteColumns" => "dc",
-        "home.hideRows" => "Zr",
-        "home.hideColumns" => "Zc",
-        "home.unhideRows" => "Sr",
-        "home.unhideColumns" => "Sc",
-        "home.columnWidth" => "fh fl",
-        "home.rowHeight" => "fk fj",
-        "sheet.next" => "gt",
-        "sheet.previous" => "gT",
-        "file.save" => ":w",
-        "file.close" => ":q",
-        "file.open" => ":e",
-        "data.sortAscending" => ":sort",
-        "data.sortDescending" => ":sort!",
-        "edit.fillDown" => ":fill",
-        "edit.fillRight" => ":fill right",
-        "view.freezePanes" => ":freeze",
-        "view.unfreezePanes" => ":unfreeze",
-        _ => "",
-    };
+    let builtin = VIM_KEYS.iter().find(|(c, _)| *c == id).map_or("", |(_, k)| *k);
     let mapped = maps.iter().filter(|(_, rhs)| parse_rhs(rhs) == Some(Rhs::Ex(id.to_string()))).map(|(lhs, _)| lhs.as_str());
     let all: Vec<&str> = mapped.chain((!builtin.is_empty()).then_some(builtin)).collect();
     (!all.is_empty()).then(|| all.join(" "))
@@ -1802,8 +1810,8 @@ mod tests {
         assert_eq!(vim.pending_keys(), "3d");
         assert_eq!(feed(&mut vim, "d"), vec![Action::DeleteRows(3)]);
         assert_eq!(feed(&mut vim, "yy"), vec![Action::YankRows(1)]);
-        assert_eq!(feed(&mut vim, ">>"), vec![Action::Indent(1)]);
-        assert_eq!(feed(&mut vim, "2<<"), vec![Action::Indent(-2)]);
+        assert_eq!(feed(&mut vim, ">"), vec![Action::SheetNext(1)]);
+        assert_eq!(feed(&mut vim, "2<"), vec![Action::SheetPrevious(2)]);
         assert_eq!(feed(&mut vim, "cc"), vec![Action::Edit(Edit::Substitute, None)]);
         // A different second key cancels the operator.
         assert_eq!(feed(&mut vim, "dj"), vec![]);

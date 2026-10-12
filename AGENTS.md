@@ -69,3 +69,9 @@ People trust GridCraft with their numbers; a crash loses their work. **This outr
   GitHub profiles). Never hand-edit `contributors.json`.
 - Maintainers refresh the stats with `python3 ../../craftrules/scripts/contributors.py .` (it also
   re-verifies who wrote each `people.toml` entry; `--check` only verifies).
+
+## Vim mode fork (EilifAkerjordet/gridcraft, branch `vim-mode`)
+
+Vim grid keys and the command palette live in `crates/ui-egui/src/vim.rs` and `palette.rs`.
+After merging upstream, run `cargo test -p gridcraft-ui-egui --test fork_drift` and read
+[`docs/vim-fork.md`](docs/vim-fork.md).

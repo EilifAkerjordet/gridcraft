@@ -174,10 +174,9 @@ VISUAL, V-ROW or V-COLUMN, followed by any count or prefix typed so far. Many ke
 | `fh` `fl` / `fk` `fj` | Narrower / wider column; shorter / taller row (with a count: `3fl`) |
 | `Zr` `Zc` / `Sr` `Sc` | Hide the row / column; unhide the hidden rows / columns next to the cursor (or in the selection) |
 | `Ctrl-a` `Ctrl-x` | Add / subtract the count (1) to the number or date in the cell, or the first number in its text |
-| `>>` `<<` | Indent / outdent |
+| `>` `<` / `gt` `gT` | Next / previous sheet (with a count: `3>`); `gt` and `gT` still work |
 | `u` `Ctrl-r` / `.` | Undo / redo / repeat the last change |
-| `v` `V` `Ctrl-v` | Select cells / whole rows / whole columns, then `y` `d` `c` `>` `<`, `{` `\|` `}`, `f`… or `Z`…; `o` swaps ends |
-| `gt` `gT` | Next / previous sheet |
+| `v` `V` `Ctrl-v` | Select cells / whole rows / whole columns, then `y` `d` `c` `>` `<` (indent / outdent), `{` `\|` `}`, `f`… or `Z`…; `o` swaps ends |
 | `/` `?` `n` `N` | Find forward / backward, next match, previous match |
 | `"a`–`"z` before `y` `d` `x` `p` `P` | Use that register instead of the last yank (`"ayy`, `"ap`) |
 | `q` + letter … `q` / `@` + letter, `@@` | Record a macro / play it (with a count: `3@a`), play the last one again |
@@ -194,7 +193,9 @@ Enter: `:w` (or `:w path`), `:q`, `:q!`, `:wq`, `:e path`, `:sort` `:sort!` (des
 same palette opens with ⌘⇧Space (Ctrl+Shift+Space) or the ribbon's search button, without the vim
 keys, and a leading `:` gives the command line there too. Anything else filters the list of every command, with its shortcut
 and its vim keys. Up/Down or `Ctrl-n` `Ctrl-p` (`Ctrl-j` `Ctrl-k`) choose, Enter runs, Escape
-(or Backspace on an empty line) closes. Commands that need settings open their dialog.
+(or Backspace on an empty line) closes. Commands that need settings open their dialog. If a
+command needs a value (font size, fill colour, number format), pick it from the list or type
+after the id (`:home.fontSize 14`, `:home.numberFormat Percentage`).
 
 **Mappings.** `:map lhs rhs` maps keys in the grid (vim's `noremap`: the right-hand side is not
 mapped again), `:unmap lhs` removes one, and `:map` alone lists them. They are saved with your
