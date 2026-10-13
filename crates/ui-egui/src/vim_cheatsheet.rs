@@ -177,15 +177,15 @@ fn paint_row(ui: &egui::Ui, rect: Rect, row: &Row, t: &Tokens) {
     let left = rect.left() + 8.0;
     let mid = rect.center().y;
     let keys_font = egui::FontId::monospace(13.0);
-    let text = t.text;
-    let dim = t.text_dim;
-    let gk = painter.layout_no_wrap(row.keys.clone(), keys_font, text);
-    painter.galley(egui::pos2(left, mid - gk.size().y / 2.0), gk, text);
-    let path_left = left + gk.size().x + 14.0;
+    let gk = painter.layout_no_wrap(row.keys.clone(), keys_font, t.text);
+    let keys_w = gk.size().x;
+    painter.galley(egui::pos2(left, mid - gk.size().y / 2.0), gk, t.text);
+    let path_left = left + keys_w + 14.0;
     let cat = format!("{} · ", row.category);
-    let gc = painter.layout_no_wrap(cat, theme::ui_font(11.5), dim);
-    painter.galley(egui::pos2(path_left, mid - gc.size().y / 2.0), gc, dim);
-    let desc_left = path_left + gc.size().x;
+    let gc = painter.layout_no_wrap(cat, theme::ui_font(11.5), t.text_dim);
+    let cat_w = gc.size().x;
+    painter.galley(egui::pos2(path_left, mid - gc.size().y / 2.0), gc, t.text_dim);
+    let desc_left = path_left + cat_w;
     let g = painter.layout_no_wrap(row.desc.clone(), theme::ui_font(13.0), text);
     painter.galley(egui::pos2(desc_left, mid - g.size().y / 2.0), g, text);
 }
