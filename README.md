@@ -177,7 +177,8 @@ VISUAL, V-ROW or V-COLUMN, followed by any count or prefix typed so far. Many ke
 | `>` `<` / `gt` `gT` | Next / previous sheet (with a count: `3>`); `gt` and `gT` still work |
 | `u` `Ctrl-r` / `.` | Undo / redo / repeat the last change |
 | `v` `V` `Ctrl-v` | Select cells / whole rows / whole columns, then `y` `d` `c` `>` `<` (indent / outdent), `{` `\|` `}`, `f`… or `Z`…; `o` swaps ends |
-| `/` `?` `n` `N` | Find forward / backward, next match, previous match |
+| `?` | Searchable vim key cheat sheet (filter bindings) |
+| `/` `#` `n` `N` | Find forward / backward in the sheet, next / previous match |
 | `"a`–`"z` before `y` `d` `x` `p` `P` | Use that register instead of the last yank (`"ayy`, `"ap`) |
 | `q` + letter … `q` / `@` + letter, `@@` | Record a macro / play it (with a count: `3@a`), play the last one again |
 | `:` | Command line and command palette (below) |

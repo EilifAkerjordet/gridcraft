@@ -1751,7 +1751,7 @@ fn keyboard(app: &mut SheetApp, ctx: &egui::Context, resp: &egui::Response, geo:
         resp.request_focus();
     }
     let other_focus = ctx.memory(|m| m.focused()).is_some_and(|f| f != resp.id && (editing || !stale.contains(&f)));
-    if editing || app.dialog.is_some() || app.palette.is_some() || other_focus || app.message.is_some() {
+    if editing || app.dialog.is_some() || app.palette.is_some() || app.cheat_sheet.is_some() || other_focus || app.message.is_some() {
         return;
     }
     if ctx.memory(|m| m.focused()).is_none() {

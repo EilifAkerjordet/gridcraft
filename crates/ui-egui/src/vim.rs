@@ -182,6 +182,8 @@ pub enum Action {
     Register(char),
     /// `:` opens the palette as a command line.
     Palette,
+    /// `?` — searchable key index.
+    CheatSheet,
     /// A mapping's `:command<CR>`.
     Ex(String),
     Escape,
@@ -681,10 +683,15 @@ impl Vim {
             Input::Ctrl('r') => (Action::Redo(self.take_count()), Done::Other),
             Input::Char('n') => (Action::SearchNext { forward: !self.last_search_back, count: self.take_count() }, Done::Other),
             Input::Char('N') => (Action::SearchNext { forward: self.last_search_back, count: self.take_count() }, Done::Other),
-            Input::Char(c @ ('/' | '?')) => {
+            Input::Char('?') => {
+                self.count = None;
+                out.push(Action::CheatSheet);
+                return Done::Other;
+            }
+            Input::Char(c @ ('/' | '#')) => {
                 self.count = None;
                 self.search = Some(String::new());
-                self.search_back = c == '?';
+                self.search_back = c == '#';
                 return Done::Pending;
             }
             Input::Ctrl('a') => (Action::Increment(i64::from(self.take_count())), Done::Change),
@@ -783,6 +790,10 @@ impl Vim {
             Input::Char('<') => Op::Outdent,
             Input::Char('o') => {
                 out.push(Action::VisualSwap);
+                return Done::Pending;
+            }
+            Input::Char('?') => {
+                out.push(Action::CheatSheet);
                 return Done::Pending;
             }
             Input::Char(':') => return self.palette(out),
@@ -999,7 +1010,7 @@ pub fn status_keys(app: &SheetApp) -> String {
         return if ed.vim.is_normal() { ed.vim.pending_keys() } else { String::new() };
     }
     if let Some(query) = app.vim.search() {
-        return format!("{}{query}", if app.vim.search_back { '?' } else { '/' });
+        return format!("{}{query}", if app.vim.search_back { '#' } else { '/' });
     }
     let keys = app.vim.pending_keys();
     match app.vim.recording() {
@@ -1257,6 +1268,7 @@ fn act(app: &mut SheetApp, ctx: &Context, action: Action) {
             app.vim.shape = None;
             app.palette = Some(crate::palette::Palette::new(true));
         }
+        Action::CheatSheet => app.cheat_sheet = Some(crate::vim_cheatsheet::CheatSheet::default()),
         Action::Ex(line) => match crate::palette::parse_ex(&line) {
             Some(ex) => crate::palette::run_ex(app, ex),
             None => app.toast = Some((format!("Not a command: {line}"), crate::now_ms())),
@@ -1560,7 +1572,7 @@ pub const VIM_KEYS: &[(&str, &str)] = &[
     ("edit.paste", "p"),
     ("edit.pasteSpecial", "Pv Pf Pc Pt"),
     ("edit.clearContents", "x"),
-    ("edit.find", "/ ?"),
+    ("edit.find", "/ #"),
     ("edit.goTo", "go"),
     ("home.alignLeft", "{"),
     ("home.alignCenter", "|"),
@@ -1939,7 +1951,7 @@ mod tests {
     #[test]
     fn backward_search_flips_n() {
         let mut vim = Vim::default();
-        feed(&mut vim, "?ab");
+        feed(&mut vim, "#ab");
         assert_eq!(vim.feed(Input::Enter), vec![Action::Search { what: "ab".into(), forward: false }]);
         assert_eq!(feed(&mut vim, "n"), vec![Action::SearchNext { forward: false, count: 1 }]);
         assert_eq!(feed(&mut vim, "N"), vec![Action::SearchNext { forward: true, count: 1 }]);
@@ -2041,6 +2053,9 @@ mod tests {
         assert_eq!(feed(&mut vim, ":"), vec![Action::Palette]);
         assert_eq!(feed(&mut vim, "v:"), vec![Action::Visual(Some(Visual::Cells)), Action::Palette]);
         assert_eq!(vim.mode(), Mode::Normal);
+        assert_eq!(feed(&mut vim, "?"), vec![Action::CheatSheet]);
+        assert_eq!(feed(&mut vim, "#x"), vec![]);
+        assert_eq!(vim.feed(Input::Enter), vec![Action::Search { what: "x".into(), forward: false }]);
     }
 
     #[test]

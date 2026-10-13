@@ -626,9 +626,18 @@ fn capital_s_unhides_next_to_the_cursor() {
 }
 
 #[test]
-fn question_mark_searches_backward() {
+fn question_mark_opens_the_cheat_sheet() {
     let mut h = harness(rows(), true);
-    typed(&mut h, "3G?r");
+    typed(&mut h, "?");
+    assert!(h.state().cheat_sheet.is_some());
+    press(&mut h, Key::Escape, Modifiers::NONE);
+    assert!(h.state().cheat_sheet.is_none());
+}
+
+#[test]
+fn hash_searches_backward() {
+    let mut h = harness(rows(), true);
+    typed(&mut h, "3G#r");
     press(&mut h, Key::Enter, Modifiers::NONE);
     assert_eq!(active(&h), "A2");
     typed(&mut h, "n");

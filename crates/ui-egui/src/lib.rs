@@ -27,6 +27,7 @@ pub mod tabs;
 pub mod text_box;
 pub mod theme;
 pub mod vim;
+pub mod vim_cheatsheet;
 pub mod vim_text;
 pub mod widgets;
 
@@ -201,6 +202,8 @@ pub struct SheetApp {
     pub vim: vim::Vim,
     /// The open command palette.
     pub palette: Option<palette::Palette>,
+    /// Vim key cheat sheet (`?`).
+    pub cheat_sheet: Option<vim_cheatsheet::CheatSheet>,
     pub(crate) shots: control::Shots,
     /// Chart selected on the sheet (id).
     pub selected_chart: Option<u32>,
@@ -236,6 +239,7 @@ impl SheetApp {
             keytips: keytips::KeyTips::default(),
             vim: vim::Vim::default(),
             palette: None,
+            cheat_sheet: None,
             shots: control::Shots::default(),
             selected_chart: None,
             started: now_ms(),
@@ -691,6 +695,7 @@ impl SheetApp {
         let vim_enabled =
             self.keytips.prefix().is_none() && self.text_box_editor.is_none() && self.grid_owns_keys(&ctx) && !egui::Popup::is_any_open(&ctx);
         vim::process(self, &ctx, vim_enabled);
+        vim_cheatsheet::show(self, &ctx);
         palette::show(self, &ctx);
         ribbon::title_bar(self, ui);
         ribbon::show(self, ui);
@@ -749,6 +754,7 @@ impl SheetApp {
     fn grid_owns_keys(&self, ctx: &egui::Context) -> bool {
         self.editor.is_none()
             && self.palette.is_none()
+            && self.cheat_sheet.is_none()
             && self.dialog.is_none()
             && self.message.is_none()
             && self.name_box.is_none()

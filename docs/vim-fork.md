@@ -41,6 +41,8 @@ palette** (`crates/ui-egui/src/palette.rs`). Upstream command names and dialogs 
   `recent_commands`.
 - Palette: `SheetApp.palette`, ⌘⇧Space in `grid.rs`, `:` → `Action::Palette`, ribbon search →
   `open_dialog("commandSearch")` routes to `Palette::new(false)`.
+- Cheat sheet: `vim_cheatsheet.rs`, `?` → `Action::CheatSheet`; static list in `BINDINGS` plus user
+  `:map` entries. Update when adding keys.
 
 ## Tests worth running
 
