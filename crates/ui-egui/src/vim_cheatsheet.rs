@@ -186,8 +186,8 @@ fn paint_row(ui: &egui::Ui, rect: Rect, row: &Row, t: &Tokens) {
     let cat_w = gc.size().x;
     painter.galley(egui::pos2(path_left, mid - gc.size().y / 2.0), gc, t.text_dim);
     let desc_left = path_left + cat_w;
-    let g = painter.layout_no_wrap(row.desc.clone(), theme::ui_font(13.0), text);
-    painter.galley(egui::pos2(desc_left, mid - g.size().y / 2.0), g, text);
+    let g = painter.layout_no_wrap(row.desc.clone(), theme::ui_font(13.0), t.text);
+    painter.galley(egui::pos2(desc_left, mid - g.size().y / 2.0), g, t.text);
 }
 
 #[cfg(test)]
